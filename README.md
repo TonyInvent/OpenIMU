@@ -17,6 +17,18 @@ Design goal: **the lowest possible end-to-end latency**.
 | EXTI0 / INT1| PB0  | ICM-45686 data-ready interrupt, rising-edge triggered |
 | FDCAN1_TX   | PA12 | CAN FD transmit |
 | FDCAN1_RX   | PA11 | CAN FD receive (TX-only in this project, unused) |
+| LED         | PB2  | Status LED (current-sinking: LOW = ON) |
+
+### 1.1 Status LED (PB2)
+
+PB2 drives a status LED in current-sinking configuration (LOW = ON):
+
+| State             | LED behavior                        |
+|-------------------|-------------------------------------|
+| Power-on / init   | Solid ON                            |
+| Normal (CAN TX)   | Toggle every 100 frames (~4 Hz)     |
+| Runtime error     | Fast blink (toggle every 30 ms)     |
+| Fatal init error  | Fast blink forever                  |
 
 ---
 

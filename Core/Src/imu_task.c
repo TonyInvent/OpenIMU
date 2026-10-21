@@ -45,6 +45,20 @@ static const osThreadAttr_t imu_task_attributes = {
 };
 
 /* ------------------------------------------------------------------------- */
+/* Status LED (PB2, current-sinking: LOW = ON)                               */
+/* ------------------------------------------------------------------------- */
+#define LED_GPIO_PORT            GPIOB
+#define LED_GPIO_PIN             GPIO_PIN_2
+
+#define LED_ON()      HAL_GPIO_WritePin(LED_GPIO_PORT, LED_GPIO_PIN, GPIO_PIN_RESET)
+#define LED_OFF()     HAL_GPIO_WritePin(LED_GPIO_PORT, LED_GPIO_PIN, GPIO_PIN_SET)
+#define LED_TOGGLE()  HAL_GPIO_TogglePin(LED_GPIO_PORT, LED_GPIO_PIN)
+
+/* Blink timing */
+#define LED_RUN_TOGGLE_FRAMES    100U   /* normal: toggle every 100 frames (~125 ms @ 800 Hz) */
+#define LED_ERROR_BLINK_MS       30U    /* error:  toggle every 30 ms (fast blink)             */
+
+/* ------------------------------------------------------------------------- */
 /* Private variables                                                         */
 /* ------------------------------------------------------------------------- */
 static TaskHandle_t imu_task_handle = NULL;   /* used for ISR -> task notify */
@@ -54,6 +68,8 @@ volatile uint32_t imu_sample_count = 0U;      /* total samples transmitted   */
 volatile uint32_t imu_missed_count  = 0U;     /* data-ready overruns         */
 volatile uint32_t imu_can_error_count = 0U;   /* CAN queue failures          */
 volatile uint32_t imu_spi_error_count = 0U;   /* SPI read failures           */
+
+static uint32_t led_error_last_tick = 0U;     /* last error fast-blink toggle (ms) */
 
 /* ------------------------------------------------------------------------- */
 /* Private function prototypes                                               */
@@ -88,6 +104,31 @@ static void IMU_PackFrame(uint8_t *dst, uint16_t seq, const ICM45686_Data_t *d)
 
     dst[14] = (uint8_t)((uint16_t)d->temp >> 8);
     dst[15] = (uint8_t)((uint16_t)d->temp & 0xFFU);
+}
+
+/**
+  * @brief  Fast-blink the LED once per LED_ERROR_BLINK_MS (error indication).
+  * @note   Called from the task loop on each error; the blink rate is limited
+  *         by HAL_GetTick() so a burst of errors still produces a clean blink.
+  */
+static void LED_ErrorBlink(void)
+{
+    uint32_t now = HAL_GetTick();
+    if ((now - led_error_last_tick) >= LED_ERROR_BLINK_MS) {
+        LED_TOGGLE();
+        led_error_last_tick = now;
+    }
+}
+
+/**
+  * @brief  Fatal error: fast-blink forever (init failure). Never returns.
+  */
+static void LED_FatalBlink(void)
+{
+    for (;;) {
+        LED_TOGGLE();
+        osDelay(LED_ERROR_BLINK_MS);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -136,16 +177,18 @@ static void IMU_Task(void *argument)
     uint8_t               tx_data[IMU_CAN_DLC_BYTES];
     uint16_t              seq = 0U;
 
+    /* 0. Power-on indicator: turn the status LED solid ON. */
+    LED_ON();
+
     /* 1. Initialise the IMU and start the FDCAN peripheral */
     if (ICM45686_Init(&hspi1) != HAL_OK) {
-        /* IMU not present / miswired. Spin here; inspect in the debugger. */
-        for (;;) {
-        }
+        /* IMU not present / miswired: fast-blink forever. */
+        LED_FatalBlink();
     }
 
     if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK) {
-        for (;;) {
-        }
+        /* FDCAN failed to start: fast-blink forever. */
+        LED_FatalBlink();
     }
 
     /* 2. Prepare the (constant) CAN FD TX header */
@@ -174,6 +217,7 @@ static void IMU_Task(void *argument)
 
         if (ICM45686_ReadData(&imu) != HAL_OK) {
             imu_spi_error_count++;
+            LED_ErrorBlink();
             continue;
         }
 
@@ -181,9 +225,14 @@ static void IMU_Task(void *argument)
 
         if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeader, tx_data) != HAL_OK) {
             imu_can_error_count++;
-            /* Frame dropped due to a full TX FIFO / bus overload. */
+            /* Frame dropped (TX FIFO full / bus error): fast-blink. */
+            LED_ErrorBlink();
         } else {
             imu_sample_count++;
+            /* Normal operation: toggle the LED every 100 transmitted frames. */
+            if ((imu_sample_count % LED_RUN_TOGGLE_FRAMES) == 0U) {
+                LED_TOGGLE();
+            }
         }
     }
 }
