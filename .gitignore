@@ -1,0 +1,27 @@
+# Build output
+Debug/
+Release/
+
+# Object / binary / map files
+*.o
+*.obj
+*.elf
+*.hex
+*.bin
+*.map
+*.list
+*.su
+*.cyclo
+
+# Dependency files
+*.d
+
+# Eclipse / STM32CubeIDE settings
+.settings/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.iml
