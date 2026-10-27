@@ -6,9 +6,10 @@
   *          This driver is written for the STM32G431 + HAL environment and
   *          assumes the SPI peripheral (SPI1) has been initialised with:
   *            - 8-bit data size
-  *            - Mode 0 (CPOL = Low, CPHA = 1Edge)
+  *            - Mode 3 (CPOL = High, CPHA = 2Edge)
   *            - MSB first
-  *            - Hardware NSS (CS) with NSS pulse management DISABLED
+  *            - Software chip-select on PA4: a plain GPIO driven low around
+  *              each transfer (SPI_NSS_SOFT); the hardware NSS is NOT used
   *            - SCK <= 24 MHz (12.5 MHz recommended)
   *
   *          All register definitions below are the "little-endian" register
@@ -69,7 +70,19 @@ extern "C" {
 #define ICM45686_MREG_ACCEL_UI_LPFBW   0xA583U  /* IPREG_SYS2_REG_131: accel_ui_lpfbw_sel[2:0] */
 #define ICM45686_MREG_GYRO_UI_LPFBW    0xA4ACU  /* IPREG_SYS1_REG_172: gyro_ui_lpfbw_sel[2:0]  */
 
-/* UI low-pass filter bandwidth (divisor of the output data rate) */
+/* UI low-pass filter bandwidth, encoded as a divisor of the ODR
+ * (accel_ui_lpfbw_sel / gyro_ui_lpfbw_sel, 3 bits):
+ *   0 = OFF (no filter, widest -> lowest group delay, most noise)
+ *   1 = ODR/4
+ *   2 = ODR/8
+ *   3 = ODR/16
+ *   4 = ODR/32
+ *   5 = ODR/64
+ *   6 = ODR/128 (narrowest -> most group delay, least noise)
+ * Encoding source: TDK reference driver / Zephyr dt-bindings
+ * (ICM45686_DT_ACCEL_LPF_BW_* / ICM45686_DT_GYRO_LPF_BW_*).
+ * At 800 Hz ODR, ODR/4 = 200 Hz corner. */
+#define ICM45686_UI_LPFBW_OFF          0x00U
 #define ICM45686_UI_LPFBW_DIV_4        0x01U
 
 /* ------------------------------------------------------------------------- */
