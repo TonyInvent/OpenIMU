@@ -13,11 +13,16 @@
 | SPI1_SCK | PA5 | ICM-45686 SCK，12.5 MHz |
 | SPI1_MISO | PA6 | ICM-45686 SDO |
 | SPI1_MOSI | PA7 | ICM-45686 SDI |
-| SPI1_NSS | PA4 | ICM-45686 CS（硬件 NSS） |
+| SPI1_CS | PA4 | ICM-45686 片选（软件 GPIO，低电平有效） |
 | EXTI0 / INT1 | PB0 | ICM-45686 数据就绪中断，上升沿触发 |
 | FDCAN1_TX | PA12 | CAN FD 发送 |
 | FDCAN1_RX | PA11 | CAN FD 接收（本工程仅发送，未用） |
 | LED | PB2 | 状态 LED（灌电流：低电平点亮） |
+
+SPI 工作在 **Mode 3**（CPOL = 高，CPHA = 第 2 边沿），并使用**软件片选**：
+PA4 是普通 GPIO 输出，由驱动在每次传输前后拉低/拉高（`SPI_NSS_SOFT` +
+`HAL_GPIO_WritePin`）。**没有使用 STM32 硬件 NSS**——它的自动脉冲时序无法在整段
+突发传输期间保持片选有效。
 
 ### 1.1 状态 LED（PB2）
 
@@ -76,14 +81,15 @@ PB2 驱动一颗灌电流接法的状态 LED（低电平点亮）：
 | ISR → 任务唤醒 | `vTaskNotifyGiveFromISR` / `ulTaskNotifyTake` | FreeRTOS 最快的唤醒原语，无队列/信号量对象与内存开销 |
 | 读取方式 | 直接读数据寄存器（非 FIFO） | 始终读**最新**样本，不产生 FIFO 积压延迟 |
 | 任务优先级 | `osPriorityHigh` | 被唤醒后几乎立即被调度 |
-| SPI | 阻塞式 `HAL_SPI_TransmitReceive` 突发读 | 14 字节小数据量下阻塞方式最确定，无 DMA 配置开销 |
+| SPI | Mode 3、软件片选（PA4）、阻塞式 `HAL_SPI_TransmitReceive` 突发读 | 14 字节小数据量下阻塞方式最确定；软件片选规避硬件 NSS 的时序问题 |
 | CAN | FD + BRS，数据段 5 Mbit/s | 缩短数据段传输时间 |
 
 ### 2.2 各文件职责
 
 ```
-Core/Src/icm45686.c        ICM-45686 驱动：SPI 传输、寄存器读写、软复位、
-                           WHO_AM_I 校验、ODR/量程配置、14 字节突发读、端序自适应
+Core/Src/icm45686.c        ICM-45686 驱动：软件片选（PA4）SPI 传输、寄存器/MREG
+                           读写、软复位、WHO_AM_I 校验、ODR/量程/低噪声滤波配置、
+                           14 字节突发读、端序自适应
 Core/Inc/icm45686.h        寄存器地址、ODR/量程枚举、数据结构、换算系数
 Core/Src/imu_task.c        FreeRTOS 任务：初始化、EXTI0 使能、组帧、FDCAN 发送、诊断计数
 Core/Inc/imu_task.h        任务接口、CAN ID、帧长度
@@ -117,6 +123,23 @@ Core/Src/stm32g4xx_it.c    EXTI0_IRQHandler
 accel_g  = raw_accel / 8192.0
 gyro_dps = raw_gyro  / 16.4
 temp_°C  = raw_temp  / 132.48 + 25
+```
+
+### 3.1 物理层配置
+
+- **发送器延时补偿（TDC）已开启**。FDCAN 内核时钟 100 MHz 时，1 个 *mtq* = 10 ns，
+  故 `TDCO = 16` 把次级采样点放在数据位内约 **160 ns** 处。若不开 TDC、或 `TDCO = 0`，
+  5 Mbit/s 数据段会因位错误而失败，而 1 Mbit/s 仲裁段在示波器上看起来完全正常。
+  这正是让 16 字节 FD 帧稳定发出的关键配置。
+- **bus-off 自动恢复**：总线上没有接收方（无 ACK）时，节点最终会进入 bus-off。任务
+  检测到 `PSR.BO` 后清除 `CCCR.INIT`，节点随即恢复并持续重试；接收方任何时候接入
+  都可以，**不需要约定上电顺序**。
+
+### 3.2 帧示例
+
+```
+ID 0x001  [16]  30 F5 02 65 F1 8C 1C AE 00 0D 00 03 00 08 01 00
+           seq   | accel X/Y/Z (int16 大端) | gyro X/Y/Z (int16 大端) | temp
 ```
 
 ---
@@ -179,8 +202,14 @@ ICM-45686 在低噪声模式下，内部有 ADC 转换和 UI 低通滤波（抗�
 |---|---|
 | `imu_sample_count` | 已成功入 FIFO 的帧数 |
 | `imu_missed_count` | 数据就绪溢出（任务未能及时响应）次数 |
-| `imu_can_error_count` | CAN 发送 FIFO 满/发送失败次数 |
+| `imu_can_error_count` | CAN 发送 FIFO 满/入队失败次数 |
 | `imu_spi_error_count` | SPI 读失败次数 |
+| `can_status`（`FDCAN_ProtocolStatusTypeDef`） | 协议状态：`BusOff`、`ErrorPassive`、`LastErrorCode`、`DataLastErrorCode` |
+| `can_errors`（`FDCAN_ErrorCountersTypeDef`） | `TxErrorCnt` / `RxErrorCnt`；总线正常时应保持 0 |
+
+> `imu_sample_count` 只能证明帧**已入队**，不能证明已上总线；总线/位错误发生在入队之后，
+> 因此要确认真正发送成功，请看 `can_errors.TxErrorCnt`（应保持 0）和
+> `can_status.LastErrorCode`。
 
 ---
 
@@ -192,16 +221,20 @@ ICM-45686 在低噪声模式下，内部有 ADC 转换和 UI 低通滤波（抗�
 - 直接读最新寄存器样本（替代 FIFO 批量）。
 - FDCAN FD + BRS，数据段 5 Mbit/s。
 
-### 5.2 传感器：加宽内部 UI 低通滤波器（收益最大）
+### 5.2 传感器：UI 低通滤波器带宽（收益最大）
 
-ICM-45686 的陀螺/加速度 UI 低通滤波器带宽可调，带宽越宽群延迟越低（但噪声增大）。当前驱动保持出厂默认；若要极致低延迟，可在 `icm45686.c` 的 `ICM45686_Init()` 中追加（通过 MREG 间接写）：
+ICM-45686 的陀螺/加速度 UI 低通滤波器带宽可调，带宽越宽群延迟越低（但噪声增大）。
+当前驱动在初始化时已把两路都设为 **ODR/4**（`ICM45686_UI_LPFBW_DIV_4`，通过 MREG
+`0xA4AC` / `0xA583` 写入）。
 
 | 传感器 | MREG 地址 | 位 | 说明 |
 |---|---|---|---|
 | 陀螺 | `IPREG_SYS1_REG_172` = `0xA4AC` | `gyro_ui_lpfbw_sel[2:0]` | `0`=不滤波（最宽/最低延迟）… `6`=最窄 |
 | 加速度 | `IPREG_SYS2_REG_131` = `0xA583` | `accel_ui_lpfbw_sel[2:0]` | 同上 |
 
-写入方式与 `SREG_CTRL` 相同：先写 16 位地址到 `IREG_ADDR_15_8(0x7C)/IREG_ADDR_7_0(0x7D)`，再写数据到 `IREG_DATA(0x7E)`。设为 `0`（NO_FILTER）可获得最低群延迟。
+若要极致低延迟，可在 `ICM45686_Init()` 里把两者设为 `0`（NO_FILTER），以噪声换群延迟。
+写入方式与 `SREG_CTRL` 相同：先写 16 位地址到
+`IREG_ADDR_15_8(0x7C)/IREG_ADDR_7_0(0x7D)`，再写数据到 `IREG_DATA(0x7E)`。
 
 ### 5.3 SPI 时钟
 
@@ -219,6 +252,7 @@ ICM-45686 的陀螺/加速度 UI 低通滤波器带宽可调，带宽越宽群�
 ## 6. 构建与烧录
 
 1. 用 STM32CubeIDE 打开工程，`Project → Build`（已通过 13.3 工具链全量编译验证）。
-2. 烧录后，若仅本节点在总线上（无其它 CAN 节点应答），发送会因无 ACK 而失败（`imu_can_error_count` 累加），属正常总线现象；实测需接入至少一个支持 **CAN FD + BRS 且数据段 ≥5 Mbit/s** 的接收节点，并在总线两端加 **120 Ω 终端电阻**。
+2. 烧录后，接入至少一个支持 **CAN FD + BRS 且数据段 ≥5 Mbit/s** 的接收节点，并在总线两端加 **120 Ω 终端电阻**。
+3. 若仅本节点在总线上（无 ACK），节点会进入 bus-off，但会**自动恢复**：任务检测到 `PSR.BO` 即清除 `CCCR.INIT`，因此节点会持续重试，接收方一旦接入就开始正常收流。上电顺序无所谓。
 
-> 注意：若用 CubeMX 重新生成代码，会覆盖 `main.c` 里 SPI/FDCAN 的生成区初始化，需重新把 SPI 设为 8-bit / 12.5 MHz / NSS pulse 关、FDCAN 设为 FD+BRS（1M/5M）。
+> 注意：若用 CubeMX 重新生成代码，会覆盖 `main.c` 里 SPI/FDCAN 的生成区初始化，需重新把 SPI 设为 **8-bit / Mode 3（CPOL 高、CPHA 第 2 边沿）/ 12.5 MHz / NSS 软件**，并把 **PA4 配成 GPIO 输出**（软件片选，空闲拉高）；FDCAN 设为 FD+BRS（1M/5M），且 `imu_task.c` 里的 TDC / bus-off 处理要保留。

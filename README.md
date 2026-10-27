@@ -13,11 +13,16 @@ Design goal: **the lowest possible end-to-end latency**.
 | SPI1_SCK    | PA5  | ICM-45686 SCK, 12.5 MHz |
 | SPI1_MISO   | PA6  | ICM-45686 SDO |
 | SPI1_MOSI   | PA7  | ICM-45686 SDI |
-| SPI1_NSS    | PA4  | ICM-45686 CS (hardware NSS) |
+| SPI1_CS     | PA4  | ICM-45686 chip-select (software GPIO, active-low) |
 | EXTI0 / INT1| PB0  | ICM-45686 data-ready interrupt, rising-edge triggered |
 | FDCAN1_TX   | PA12 | CAN FD transmit |
 | FDCAN1_RX   | PA11 | CAN FD receive (TX-only in this project, unused) |
 | LED         | PB2  | Status LED (current-sinking: LOW = ON) |
+
+SPI runs in **Mode 3** (CPOL = High, CPHA = 2nd edge) with **software chip-select**:
+PA4 is a plain GPIO output that the driver drives low around each transfer
+(`SPI_NSS_SOFT` + `HAL_GPIO_WritePin`). The STM32 hardware NSS is *not* used —
+its automatic pulse timing did not keep CS asserted for the whole burst.
 
 ### 1.1 Status LED (PB2)
 
@@ -77,15 +82,16 @@ The system uses an **"interrupt-driven + read-register"** model rather than poll
 | ISR -> task wake | `vTaskNotifyGiveFromISR` / `ulTaskNotifyTake` | Fastest FreeRTOS wake primitive; no queue/semaphore object or memory overhead |
 | Read method      | Read data registers directly (not the FIFO)   | Always reads the **latest** sample; no FIFO backlog latency |
 | Task priority    | `osPriorityHigh`                              | Scheduled almost immediately after wakeup |
-| SPI              | Blocking `HAL_SPI_TransmitReceive` burst read | Most deterministic for a 14-byte transfer; no DMA setup overhead |
+| SPI              | Mode 3, software CS (PA4), blocking `HAL_SPI_TransmitReceive` burst | Most deterministic for a 14-byte transfer; software CS avoids hardware-NSS timing quirks |
 | CAN              | FD + BRS, 5 Mbit/s data phase                 | Shorter data-phase transmission time |
 
 ### 2.2 File Responsibilities
 
 ```
-Core/Src/icm45686.c        ICM-45686 driver: SPI transport, register access, soft
-                           reset, WHO_AM_I check, ODR/FSR config, 14-byte burst
-                           read, endianness auto-detection
+Core/Src/icm45686.c        ICM-45686 driver: software CS (PA4) SPI transport,
+                           register + MREG access, soft reset, WHO_AM_I check,
+                           ODR/FSR/LN-filter config, 14-byte burst read,
+                           endianness auto-detection
 Core/Inc/icm45686.h        Register addresses, ODR/FSR enums, data structure, scale factors
 Core/Src/imu_task.c        FreeRTOS task: init, EXTI0 enable, frame packing, FDCAN TX,
                            diagnostic counters
@@ -120,6 +126,26 @@ Byte(s)    Content
 accel_g  = raw_accel / 8192.0
 gyro_dps = raw_gyro  / 16.4
 temp_degC = raw_temp / 132.48 + 25
+```
+
+### 3.1 Physical-layer configuration
+
+- **Transmitter Delay Compensation (TDC)** is enabled. With the FDCAN kernel clock
+  at 100 MHz one *mtq* is 10 ns, so `TDCO = 16` places the secondary sample point
+  about **160 ns** into the data bit. Without TDC — or with `TDCO = 0` — the
+  5 Mbit/s data phase fails with bit errors even though the 1 Mbit/s arbitration
+  phase still looks perfect on a scope. This is what made 16-byte FD frames
+  transmit reliably.
+- **Bus-off auto-recovery**: with no ACK (no receiver on the bus) the node
+  eventually enters bus-off. The task watches `PSR.BO` and clears `CCCR.INIT`, so
+  the node recovers and keeps retrying. A receiver can be connected at any time;
+  power-up order does not matter.
+
+### 3.2 Frame example
+
+```
+ID 0x001  [16]  30 F5 02 65 F1 8C 1C AE 00 0D 00 03 00 08 01 00
+           seq   | accel X/Y/Z (int16 BE) | gyro X/Y/Z (int16 BE) | temp
 ```
 
 ---
@@ -182,8 +208,14 @@ total latency ~= sensor group delay (1-3 ms) + MCU path (~15-20 us) + CAN arbitr
 |---|---|
 | `imu_sample_count` | Frames successfully queued to the TX FIFO |
 | `imu_missed_count` | Data-ready overruns (task failed to respond in time) |
-| `imu_can_error_count` | CAN TX FIFO full / TX failures |
+| `imu_can_error_count` | CAN TX FIFO full / enqueue failures |
 | `imu_spi_error_count` | SPI read failures |
+| `can_status` (`FDCAN_ProtocolStatusTypeDef`) | Protocol status: `BusOff`, `ErrorPassive`, `LastErrorCode`, `DataLastErrorCode` |
+| `can_errors` (`FDCAN_ErrorCountersTypeDef`) | `TxErrorCnt` / `RxErrorCnt`; both should stay 0 on a clean bus |
+
+> `imu_sample_count` only proves a frame was *enqueued*, not that it reached the
+> bus. Bus/bit errors happen after enqueue, so check `can_errors.TxErrorCnt`
+> (should stay 0) and `can_status.LastErrorCode` to confirm real transmission.
 
 ---
 
@@ -195,16 +227,22 @@ total latency ~= sensor group delay (1-3 ms) + MCU path (~15-20 us) + CAN arbitr
 - Direct read of the latest register sample (instead of bulk FIFO reads).
 - FDCAN FD + BRS, 5 Mbit/s data phase.
 
-### 5.2 Sensor: widen the internal UI low-pass filter (highest return)
+### 5.2 Sensor: UI low-pass filter bandwidth (highest return)
 
-The ICM-45686 gyro/accel UI low-pass filter bandwidth is configurable; the wider the bandwidth, the lower the group delay (at the cost of more noise). The current driver keeps the factory default; for the lowest latency, add the following to `ICM45686_Init()` in `icm45686.c` (via indirect MREG writes):
+The ICM-45686 gyro/accel UI low-pass filter bandwidth is configurable; the wider
+the bandwidth, the lower the group delay (at the cost of more noise). The driver
+already sets both filters to **ODR/4** (`ICM45686_UI_LPFBW_DIV_4`, written through
+MREG `0xA4AC` / `0xA583` during init).
 
 | Sensor | MREG address | Field | Description |
 |---|---|---|---|
 | Gyro | `IPREG_SYS1_REG_172` = `0xA4AC` | `gyro_ui_lpfbw_sel[2:0]` | `0` = no filter (widest / lowest latency) ... `6` = narrowest |
 | Accel | `IPREG_SYS2_REG_131` = `0xA583` | `accel_ui_lpfbw_sel[2:0]` | same as above |
 
-Write them the same way as `SREG_CTRL`: first write the 16-bit address to `IREG_ADDR_15_8(0x7C)` / `IREG_ADDR_7_0(0x7D)`, then write the data to `IREG_DATA(0x7E)`. Setting `0` (NO_FILTER) gives the lowest group delay.
+For the absolute lowest latency set both to `0` (NO_FILTER) in `ICM45686_Init()`;
+this trades noise for group delay. Write them the same way as `SREG_CTRL`: 16-bit
+address to `IREG_ADDR_15_8(0x7C)` / `IREG_ADDR_7_0(0x7D)`, then the data byte to
+`IREG_DATA(0x7E)`.
 
 ### 5.3 SPI Clock
 
@@ -222,6 +260,7 @@ Currently 12.5 MHz (24 MHz is the ICM-45686 upper limit; margin was kept). It ca
 ## 6. Build & Flash
 
 1. Open the project in STM32CubeIDE and run `Project -> Build` (verified with a full build using the 13.3 toolchain).
-2. After flashing, if the node is alone on the bus (no other CAN node to acknowledge), transmission fails due to missing ACK (`imu_can_error_count` increments) - this is normal bus behavior. For real testing, connect at least one receiver that supports **CAN FD + BRS with a data phase >= 5 Mbit/s**, and place **120 ohm termination resistors** at both ends of the bus.
+2. After flashing, connect at least one receiver that supports **CAN FD + BRS with a data phase >= 5 Mbit/s**, and place **120 ohm termination resistors** at both ends of the bus.
+3. If the node is alone on the bus (no ACK) it falls back to bus-off but **auto-recovers**: the task clears `CCCR.INIT` whenever `PSR.BO` is set, so the node keeps retrying and starts streaming as soon as a receiver is connected. Power-up order does not matter.
 
-> Note: regenerating code with CubeMX overwrites the SPI/FDCAN init in the generated region of `main.c`; re-apply SPI = 8-bit / 12.5 MHz / NSS pulse off, and FDCAN = FD+BRS (1M/5M).
+> Note: regenerating code with CubeMX overwrites the SPI/FDCAN init in the generated region of `main.c`; re-apply SPI = **8-bit / Mode 3 (CPOL High, CPHA 2Edge) / 12.5 MHz / NSS soft**, with **PA4 as a GPIO output** (software CS, idle high), and FDCAN = FD+BRS (1M/5M) plus the runtime TDC / bus-off handling in `imu_task.c`.
