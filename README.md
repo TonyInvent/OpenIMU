@@ -264,3 +264,62 @@ Currently 12.5 MHz (24 MHz is the ICM-45686 upper limit; margin was kept). It ca
 3. If the node is alone on the bus (no ACK) it falls back to bus-off but **auto-recovers**: the task clears `CCCR.INIT` whenever `PSR.BO` is set, so the node keeps retrying and starts streaming as soon as a receiver is connected. Power-up order does not matter.
 
 > Note: regenerating code with CubeMX overwrites the SPI/FDCAN init in the generated region of `main.c`; re-apply SPI = **8-bit / Mode 3 (CPOL High, CPHA 2Edge) / 12.5 MHz / NSS soft**, with **PA4 as a GPIO output** (software CS, idle high), and FDCAN = FD+BRS (1M/5M) plus the runtime TDC / bus-off handling in `imu_task.c`.
+
+---
+
+## 7. Receiving the Data on Linux (candump)
+
+The board sends CAN FD frames: **ID `0x01`, 16 bytes, nominal 1 Mbit/s, data phase 5 Mbit/s (BRS)**.
+On Linux, use a CAN FD-capable SocketCAN adapter (candleLight/gs_usb, PCAN-USB FD, Kvaser, ...).
+
+### 7.1 Bring up the interface
+
+```bash
+# Replace can0 with your adapter's interface name (`ip link` lists them)
+sudo ip link set can0 down
+# CAN FD: nominal 1 Mbit/s, data phase 5 Mbit/s, BRS enabled
+sudo ip link set can0 type can bitrate 1000000 dbitrate 5000000 fd on
+sudo ip link set can0 up
+```
+
+Verify:
+
+```bash
+ip -details link show can0
+```
+
+It should report `bitrate 1000000 ... dbitrate 5000000 ... fd on`.
+
+> Some drivers reject `fd on` without a data bitrate (`Error: Provide both nominal and FD data bittiming`), so always pass both `bitrate` and `dbitrate`.
+> A classic-CAN-only adapter cannot receive these frames.
+
+### 7.2 Dump the frames
+
+```bash
+candump -d can0          # payload printed as hex
+candump -d -t d can0     # + delta timestamps (useful to spot dropped frames)
+```
+
+One frame arrives every 1.25 ms (800 Hz):
+
+```
+can0  001  [16]  30 F5 02 65 F1 8C 1C AE 00 0D 00 03 00 08 01 00
+```
+
+- `001` -> CAN ID `0x01`
+- `[16]` -> 16 data bytes (DLC code 10)
+- the payload layout is in section 3
+
+### 7.3 Decode one frame
+
+The 16 bytes are big-endian: `seq[0:1]`, `accel X/Y/Z[2:7]`, `gyro X/Y/Z[8:13]`, `temp[14:15]`.
+
+```python
+import struct
+b = bytes.fromhex("30 F5 02 65 F1 8C 1C AE 00 0D 00 03 00 08 01 00")
+seq = int.from_bytes(b[0:2], "big")
+acc = struct.unpack(">3h", b[2:8])    # raw accel X/Y/Z
+gyr = struct.unpack(">3h", b[8:14])   # raw gyro  X/Y/Z
+tmp = struct.unpack(">h", b[14:16])[0]
+print(seq, [a / 8192.0 for a in acc], [g / 16.4 for g in gyr], tmp / 132.48 + 25)
+```

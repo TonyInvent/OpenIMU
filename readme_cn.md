@@ -256,3 +256,62 @@ ICM-45686 的陀螺/加速度 UI 低通滤波器带宽可调，带宽越宽群�
 3. 若仅本节点在总线上（无 ACK），节点会进入 bus-off，但会**自动恢复**：任务检测到 `PSR.BO` 即清除 `CCCR.INIT`，因此节点会持续重试，接收方一旦接入就开始正常收流。上电顺序无所谓。
 
 > 注意：若用 CubeMX 重新生成代码，会覆盖 `main.c` 里 SPI/FDCAN 的生成区初始化，需重新把 SPI 设为 **8-bit / Mode 3（CPOL 高、CPHA 第 2 边沿）/ 12.5 MHz / NSS 软件**，并把 **PA4 配成 GPIO 输出**（软件片选，空闲拉高）；FDCAN 设为 FD+BRS（1M/5M），且 `imu_task.c` 里的 TDC / bus-off 处理要保留。
+
+---
+
+## 7. 在 Linux 上用 candump 接收数据
+
+板上发送的是 CAN FD 帧：**ID `0x01`、16 字节、仲裁 1 Mbit/s、数据段 5 Mbit/s（BRS）**。
+在 Linux 上需要支持 CAN FD 的 SocketCAN 适配器（candleLight/gs_usb、PCAN-USB FD、Kvaser 等）。
+
+### 7.1 配置接口
+
+```bash
+# 把 can0 换成实际接口名（`ip link` 可列出）
+sudo ip link set can0 down
+# CAN FD：仲裁 1 Mbit/s，数据段 5 Mbit/s，开启 BRS
+sudo ip link set can0 type can bitrate 1000000 dbitrate 5000000 fd on
+sudo ip link set can0 up
+```
+
+确认：
+
+```bash
+ip -details link show can0
+```
+
+应能看到 `bitrate 1000000 ... dbitrate 5000000 ... fd on`。
+
+> 有些驱动在 `fd on` 时要求同时给出数据段位速率（否则报 `Error: Provide both nominal and FD data bittiming`），所以 `bitrate` 和 `dbitrate` 都要给。
+> 只支持经典 CAN 的适配器收不到这些帧。
+
+### 7.2 抓帧
+
+```bash
+candump -d can0          # 以十六进制显示数据
+candump -d -t d can0     # 再加差值时间戳（便于发现丢帧）
+```
+
+每 1.25 ms 出一帧（800 Hz）：
+
+```
+can0  001  [16]  30 F5 02 65 F1 8C 1C AE 00 0D 00 03 00 08 01 00
+```
+
+- `001` → CAN ID `0x01`
+- `[16]` → 16 字节数据（DLC 编码 10）
+- 字节含义见第 3 节
+
+### 7.3 解析一帧
+
+16 字节为大端：`seq[0:1]`、`accel X/Y/Z[2:7]`、`gyro X/Y/Z[8:13]`、`temp[14:15]`。
+
+```python
+import struct
+b = bytes.fromhex("30 F5 02 65 F1 8C 1C AE 00 0D 00 03 00 08 01 00")
+seq = int.from_bytes(b[0:2], "big")
+acc = struct.unpack(">3h", b[2:8])    # 原始 accel X/Y/Z
+gyr = struct.unpack(">3h", b[8:14])   # 原始 gyro  X/Y/Z
+tmp = struct.unpack(">h", b[14:16])[0]
+print(seq, [a / 8192.0 for a in acc], [g / 16.4 for g in gyr], tmp / 132.48 + 25)
+```
