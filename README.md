@@ -183,22 +183,22 @@ A 16-byte FD frame (1 Mbit/s arbitration + 5 Mbit/s data phase, incl. bit-stuffi
 | Trailer (ACK + EOF + IFS) @ 1 Mbit/s | ~13 us |
 | **Full frame total** | **~70-80 us** |
 
-> The first data byte appears on the bus right after the arbitration phase ends, i.e. ~25-30 us after transmission starts.
+> The complete frame (16 data bytes + CRC + ACK/EOF) is on the bus ~70-80 us after transmission starts.
 
 ### 4.2 Total End-to-End Latency
 
-From "sample ready inside the sensor" to "receiver gets the first data byte":
+From "sample ready inside the sensor" to "the CAN frame is fully sent on the bus":
 
 ```
-total latency ~= sensor group delay (1-3 ms) + MCU path (~15-20 us) + CAN arbitration phase (~25-30 us)
-              ~= sensor group delay + ~40-50 us
+total latency ~= sensor group delay (1-3 ms) + MCU path (~15-20 us) + full CAN FD frame (~70-80 us)
+              ~= sensor group delay + ~85-100 us
 ```
 
-**Conclusion**: the extra latency introduced by the MCU + CAN is only ~40-50 us; **the real bottleneck is the sensor's internal filter group delay**. To reduce the overall latency, start with the sensor filter bandwidth (section 5.2).
+**Conclusion**: the MCU + CAN path adds only ~85-100 us on top of the sensor's internal group delay; **the real bottleneck is the sensor's internal filter group delay (millisecond scale)**. To reduce the overall latency, start with the sensor filter bandwidth (section 5.2).
 
 ### 4.3 Jitter and Frame Loss
 
-- The sample period is 800 Hz = 1.25 ms, while the whole MCU+CAN path is ~90 us, only **~7%** of the period. CPU and bus are far from saturated, so **jitter is small and there is no backlog**.
+- The sample period is 800 Hz = 1.25 ms, while the whole MCU+CAN path (up to a complete frame on the bus) is ~85-100 us, only **~7-8%** of the period. CPU and bus are far from saturated, so **jitter is small and there is no backlog**.
 - `imu_task` is woken via task notification. If a higher-priority task briefly blocks it and one ready pulse is missed, `ulTaskNotifyTake` returns >1 and `imu_missed_count` increments; the task still reads the **latest** register sample, so **no latency is added** - only the intermediate sample is lost (the receiver can detect the gap via the `seq` counter).
 - If CAN bus congestion fills the 3-deep TX FIFO, `HAL_FDCAN_AddMessageToTxFifoQ` returns an error and `imu_can_error_count` increments; the frame is dropped (the task is never blocked, and latency does not accumulate).
 
