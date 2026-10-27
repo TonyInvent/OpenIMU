@@ -141,6 +141,25 @@ static HAL_StatusTypeDef ICM45686_WriteMreg(uint16_t addr, uint8_t value)
     return ICM45686_WriteRegisters(ICM45686_REG_IREG_ADDR_15_8, a, 3U);
 }
 
+/**
+  * @brief  Set the 3-bit UI low-pass-filter bandwidth field of an MREG register
+  *         with a read-modify-write, leaving the other bits untouched.
+  * @note   Mirrors TDK's inv_imu_set_accel_ln_bw() / inv_imu_set_gyro_ln_bw()
+  *         and the BeijingDynamics open_sprite_runtime configuration.
+  * @param  addr  16-bit MREG address (IPREG_SYS2_REG_131 / IPREG_SYS1_REG_172).
+  * @param  value LPFBW selection (0 = no filter, 1 = ODR/4 ... 6 = ODR/128).
+  */
+static HAL_StatusTypeDef ICM45686_SetLpfBw(uint16_t addr, uint8_t value)
+{
+    uint8_t v = 0U;
+
+    if (ICM45686_ReadMreg(addr, &v, 1U) != HAL_OK) {
+        return HAL_ERROR;
+    }
+    v = (uint8_t)((v & 0xF8U) | (value & 0x07U));
+    return ICM45686_WriteMreg(addr, v);
+}
+
 /* ------------------------------------------------------------------------- */
 /* Public API                                                                */
 /* ------------------------------------------------------------------------- */
@@ -239,11 +258,13 @@ HAL_StatusTypeDef ICM45686_Init(SPI_HandleTypeDef *hspi)
         return HAL_ERROR;
     }
 
-    /* 7. UI low-pass filter bandwidth = ODR/4 (low-noise mode) */
-    if (ICM45686_WriteMreg(ICM45686_MREG_ACCEL_UI_LPFBW, ICM45686_UI_LPFBW_DIV_4) != HAL_OK) {
+    /* 7. UI low-pass filter bandwidth = ODR/4 (low-noise mode). Same value as
+     *    the BeijingDynamics open_sprite_runtime reference; read-modify-write
+     *    keeps the other bits of the MREG intact. */
+    if (ICM45686_SetLpfBw(ICM45686_MREG_ACCEL_UI_LPFBW, ICM45686_UI_LPFBW_DIV_4) != HAL_OK) {
         return HAL_ERROR;
     }
-    if (ICM45686_WriteMreg(ICM45686_MREG_GYRO_UI_LPFBW, ICM45686_UI_LPFBW_DIV_4) != HAL_OK) {
+    if (ICM45686_SetLpfBw(ICM45686_MREG_GYRO_UI_LPFBW, ICM45686_UI_LPFBW_DIV_4) != HAL_OK) {
         return HAL_ERROR;
     }
 
