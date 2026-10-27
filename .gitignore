@@ -18,6 +18,7 @@ Release/
 
 # Eclipse / STM32CubeIDE settings
 .settings/
+*.launch
 
 # OS / editor junk
 .DS_Store

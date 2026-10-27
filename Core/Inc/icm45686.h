@@ -65,6 +65,13 @@ extern "C" {
 #define ICM45686_MREG_SREG_CTRL        0xA267U
 #define ICM45686_SREG_DATA_BIG_ENDIAN  0x02U   /* sreg_data_endian_sel = 1 */
 
+/* MREG addresses for low-noise mode configuration (match TDK reference driver) */
+#define ICM45686_MREG_ACCEL_UI_LPFBW   0xA583U  /* IPREG_SYS2_REG_131: accel_ui_lpfbw_sel[2:0] */
+#define ICM45686_MREG_GYRO_UI_LPFBW    0xA4ACU  /* IPREG_SYS1_REG_172: gyro_ui_lpfbw_sel[2:0]  */
+
+/* UI low-pass filter bandwidth (divisor of the output data rate) */
+#define ICM45686_UI_LPFBW_DIV_4        0x01U
+
 /* ------------------------------------------------------------------------- */
 /* WHO_AM_I                                                                   */
 /* ------------------------------------------------------------------------- */

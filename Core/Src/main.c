@@ -217,11 +217,12 @@ static void MX_FDCAN1_Init(void)
 
   /* USER CODE END FDCAN1_Init 1 */
   hfdcan1.Instance = FDCAN1;
-  /* CAN FD with bit-rate switching: nominal 1 Mbit/s, data 5 Mbit/s.
+    /* CAN FD with bit-rate switching: nominal 1 Mbit/s, data 5 Mbit/s.
      FDCAN kernel clock = 100 MHz (PCLK1, FDCAN_CLOCK_DIV1).
      Nominal: prescaler 10 -> 100 ns/tq, (1+7+2) tq = 1 us -> 1 Mbit/s, SP 80%.
      Data   : prescaler 4  ->  40 ns/tq, (1+3+1) tq = 200 ns -> 5 Mbit/s, SP 80%. */
   hfdcan1.Init.ClockDivider = FDCAN_CLOCK_DIV1;
+  /* CAN FD with BRS: nominal 1 Mbit/s, data 5 Mbit/s. */
   hfdcan1.Init.FrameFormat = FDCAN_FRAME_FD_BRS;
   hfdcan1.Init.Mode = FDCAN_MODE_NORMAL;
   hfdcan1.Init.AutoRetransmission = DISABLE;
@@ -269,10 +270,13 @@ static void MX_SPI1_Init(void)
   hspi1.Init.Direction = SPI_DIRECTION_2LINES;
   /* ICM-45686 requires 8-bit transfers (fix CubeMX default of 4-bit). */
   hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi1.Init.NSS = SPI_NSS_HARD_OUTPUT;
-  /* ICM-45686 SPI clock must be <= 24 MHz. 100 MHz / 8 = 12.5 MHz. */
+  /* SPI Mode 3 (CPOL=High, CPHA=2Edge) - matches the working BeijingDynamics /
+   * open_sprite_runtime reference driver. */
+  hspi1.Init.CLKPolarity = SPI_POLARITY_HIGH;
+  hspi1.Init.CLKPhase = SPI_PHASE_2EDGE;
+  /* Software NSS: CS (PA4) is toggled manually in the driver. */
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  /* 12.5 MHz (100 MHz / 8); half of the ICM-45686 24 MHz SPI limit. */
   hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
@@ -331,6 +335,14 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PA4 (IMU chip-select, software-controlled) */
+  GPIO_InitStruct.Pin = GPIO_PIN_4;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET); /* CS idle high (de-asserted) */
 
   /*Configure GPIO pin : PB0 */
   GPIO_InitStruct.Pin = GPIO_PIN_0;

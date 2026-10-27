@@ -69,6 +69,13 @@ volatile uint32_t imu_missed_count  = 0U;     /* data-ready overruns         */
 volatile uint32_t imu_can_error_count = 0U;   /* CAN queue failures          */
 volatile uint32_t imu_spi_error_count = 0U;   /* SPI read failures           */
 
+/* Diagnostics: FDCAN protocol status + error counters, refreshed every frame.
+ * These capture bus/bit errors that occur AFTER a frame is enqueued (which
+ * imu_can_error_count, an enqueue result, cannot see). Watch BusOff,
+ * ErrorPassive, LastErrorCode, DataLastErrorCode, TxErrorCnt in the debugger. */
+FDCAN_ProtocolStatusTypeDef can_status = {0};
+FDCAN_ErrorCountersTypeDef   can_errors  = {0};
+
 static uint32_t led_error_last_tick = 0U;     /* last error fast-blink toggle (ms) */
 
 /* ------------------------------------------------------------------------- */
@@ -186,6 +193,21 @@ static void IMU_Task(void *argument)
         LED_FatalBlink();
     }
 
+    /* 1b. Enable transmitter delay compensation (TDC) for the 5 Mbit/s data
+     *     phase. Must be configured while the FDCAN is still in READY state
+     *     (i.e. before HAL_FDCAN_Start).
+     *     SSP = measured loop delay + TDCO, both in "minimum time quantum"
+     *     (mtq) units. With the FDCAN kernel clock at 100 MHz (FDCAN_CLOCK_DIV1),
+     *     1 mtq = 10 ns, so TDCO = 16 places the sample point ~160 ns inside
+     *     the data bit, away from the edge. (TDCO = 0 samples at the edge and
+     *     produces bit errors in the 5 Mbit/s data phase.) */
+    if (HAL_FDCAN_ConfigTxDelayCompensation(&hfdcan1, 16U, 0U) != HAL_OK) {
+        LED_FatalBlink();
+    }
+    if (HAL_FDCAN_EnableTxDelayCompensation(&hfdcan1) != HAL_OK) {
+        LED_FatalBlink();
+    }
+
     if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK) {
         /* FDCAN failed to start: fast-blink forever. */
         LED_FatalBlink();
@@ -211,6 +233,14 @@ static void IMU_Task(void *argument)
     for (;;) {
         uint32_t notified = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
+        /* Auto-recover from bus-off. Without a receiver every frame gets an
+         * ACK error, which eventually drives the FDCAN into bus-off; clearing
+         * INIT lets it recover and keep transmitting. This makes the board
+         * plug-and-play with the USB-CAN dongle (no power-up order needed). */
+        if ((hfdcan1.Instance->PSR & FDCAN_PSR_BO) != 0U) {
+            hfdcan1.Instance->CCCR &= ~FDCAN_CCCR_INIT;
+        }
+
         if (notified > 1U) {
             imu_missed_count += (notified - 1U);
         }
@@ -222,6 +252,11 @@ static void IMU_Task(void *argument)
         }
 
         IMU_PackFrame(tx_data, seq++, &imu);
+
+        /* Snapshot protocol status + error counters before queuing the next
+         * frame, so post-enqueue bus/bit errors stay visible in the debugger. */
+        HAL_FDCAN_GetProtocolStatus(&hfdcan1, &can_status);
+        HAL_FDCAN_GetErrorCounters(&hfdcan1, &can_errors);
 
         if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeader, tx_data) != HAL_OK) {
             imu_can_error_count++;
