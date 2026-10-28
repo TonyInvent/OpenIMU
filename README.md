@@ -323,3 +323,50 @@ gyr = struct.unpack(">3h", b[8:14])   # raw gyro  X/Y/Z
 tmp = struct.unpack(">h", b[14:16])[0]
 print(seq, [a / 8192.0 for a in acc], [g / 16.4 for g in gyr], tmp / 132.48 + 25)
 ```
+
+---
+
+## 8. Python AHRS Demo (Mahony / Madgwick / SixAxis)
+
+`tools/ahrs_demo.py` reads the 16-byte CAN FD stream and runs three attitude
+estimators on the same data, so they can be compared live:
+
+| Estimator | Notes |
+|---|---|
+| **Mahony** | nonlinear complementary filter, proportional + integral correction |
+| **Madgwick** | gradient-descent AHRS (`--madgwick-beta`) |
+| **SixAxis** | port of BeijingDynamics `open_sprite_runtime` `native/src/imu_six_axis.hpp`: proportional correction with a startup static gyro bias and an accelerometer trust window (no magnetometer) |
+
+It shows a 3-D attitude view, the roll/pitch comparison and the world-frame
+linear ("motion") acceleration.
+
+### 8.1 Install
+
+```bash
+pip install python-can numpy matplotlib
+```
+
+### 8.2 Run
+
+```bash
+# Linux: SocketCAN (configure the interface first, see section 7)
+python tools/ahrs_demo.py -i socketcan -c can0
+
+# Windows: PCAN-USB FD via PCAN-Basic
+python tools/ahrs_demo.py -i pcan -c PCAN_USBBUS1
+
+# backend auto-detected (socketcan on Linux, pcan on Windows)
+python tools/ahrs_demo.py
+
+# console only, no window (quick check)
+python tools/ahrs_demo.py --no-plot --duration 10
+
+# UI/algorithm test without hardware
+python tools/ahrs_demo.py --simulate
+```
+
+Keep the board **still during the first `--calib-seconds`** (default 2 s): the
+demo estimates the gyro bias from that window and initialises all three filters.
+
+Options: `--mahony-kp`, `--mahony-ki`, `--madgwick-beta`, `--calib-seconds`,
+`--history`, `--log samples.csv`, `--f-clock` (PCAN clock, default 80 MHz).

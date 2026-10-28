@@ -315,3 +315,46 @@ gyr = struct.unpack(">3h", b[8:14])   # 原始 gyro  X/Y/Z
 tmp = struct.unpack(">h", b[14:16])[0]
 print(seq, [a / 8192.0 for a in acc], [g / 16.4 for g in gyr], tmp / 132.48 + 25)
 ```
+
+---
+
+## 8. Python 姿态解算 Demo（Mahony / Madgwick / SixAxis）
+
+`tools/ahrs_demo.py` 读取 16 字节 CAN FD 数据，并在同一份数据上运行三种姿态估计，实时对比：
+
+| 算法 | 说明 |
+|---|---|
+| **Mahony** | 非线性互补滤波，比例 + 积分修正 |
+| **Madgwick** | 梯度下降 AHRS（`--madgwick-beta`） |
+| **SixAxis** | 移植自 BeijingDynamics `open_sprite_runtime` 的 `native/src/imu_six_axis.hpp`：比例修正 + 启动静态陀螺偏置 + 加速度计信任窗口（无磁力计） |
+
+界面显示 3D 姿态、roll/pitch 对比，以及世界系下的线（运动）加速度。
+
+### 8.1 安装依赖
+
+```bash
+pip install python-can numpy matplotlib
+```
+
+### 8.2 运行
+
+```bash
+# Linux：SocketCAN（先按第 7 节配置接口）
+python tools/ahrs_demo.py -i socketcan -c can0
+
+# Windows：PCAN-USB FD（PCAN-Basic）
+python tools/ahrs_demo.py -i pcan -c PCAN_USBBUS1
+
+# 自动选择后端（Linux=socketcan，Windows=pcan）
+python tools/ahrs_demo.py
+
+# 只打印、不开窗口
+python tools/ahrs_demo.py --no-plot --duration 10
+
+# 无硬件时的 UI/算法测试
+python tools/ahrs_demo.py --simulate
+```
+
+标定窗口（默认 `--calib-seconds 2` 秒）内请**保持板子静止**：demo 会在这段时间估计陀螺偏置，并初始化三个滤波器。
+
+可选参数：`--mahony-kp`、`--mahony-ki`、`--madgwick-beta`、`--calib-seconds`、`--history`、`--log samples.csv`、`--f-clock`（PCAN 时钟，默认 80 MHz）。
