@@ -358,3 +358,15 @@ python tools/ahrs_demo.py --simulate
 标定窗口（默认 `--calib-seconds 2` 秒）内请**保持板子静止**：demo 会在这段时间估计陀螺偏置，并初始化三个滤波器。
 
 可选参数：`--mahony-kp`、`--mahony-ki`、`--madgwick-beta`、`--calib-seconds`、`--history`、`--log samples.csv`、`--f-clock`（PCAN 时钟，默认 80 MHz）。
+
+---
+
+## 9. 3D 打印外壳（FreeCAD）
+
+`3D/` 目录包含 FreeCAD 模型：PCB 模型、两个壳体零件，以及完整装配体。
+
+![3D 预览](3D/preview.png)
+
+文件清单见 [3D/README.md](3D/README.md)。
+
+**推荐使用 PETG 打印。** 相比 PLA 更韧、翘曲更小、层间结合更好，适合这种带安装耳的小外壳。建议参数：喷嘴 240–250 °C / 热床 80 °C，3–4 圈外墙，25–40% 填充，0.16–0.20 mm 层高。

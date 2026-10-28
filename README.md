@@ -370,3 +370,19 @@ demo estimates the gyro bias from that window and initialises all three filters.
 
 Options: `--mahony-kp`, `--mahony-ki`, `--madgwick-beta`, `--calib-seconds`,
 `--history`, `--log samples.csv`, `--f-clock` (PCAN clock, default 80 MHz).
+
+---
+
+## 9. 3D-Printed Enclosure (FreeCAD)
+
+The `3D/` folder contains the FreeCAD models: the PCB model, two enclosure parts,
+and the full assembly.
+
+![3D preview](3D/preview.png)
+
+See [3D/README.md](3D/README.md) for the file list.
+
+**Printing recommendation: PETG.** Compared with PLA it is tougher, warps far
+less and has better layer adhesion, which suits this small enclosure with
+mounting ears. Suggested profile: 240-250 C nozzle / 80 C bed, 3-4 perimeters,
+25-40 % infill, 0.16-0.20 mm layers.

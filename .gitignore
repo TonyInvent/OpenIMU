@@ -30,3 +30,6 @@ Thumbs.db
 # Python
 __pycache__/
 *.pyc
+
+# 3D preview build output (regenerate with tools/export_3d_stl.py)
+build/
