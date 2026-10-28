@@ -2,7 +2,7 @@
 
 Mechanical models for the open_imu board, created with [FreeCAD](https://www.freecad.org/).
 
-![preview](preview.png)
+![open_imu](open_imu.png)
 
 | File | Contents |
 |---|---|

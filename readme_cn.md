@@ -365,7 +365,7 @@ python tools/ahrs_demo.py --simulate
 
 `3D/` 目录包含 FreeCAD 模型：PCB 模型、两个壳体零件，以及完整装配体。
 
-![3D 预览](3D/preview.png)
+![3D 预览](3D/open_imu.png)
 
 文件清单见 [3D/README.md](3D/README.md)。
 

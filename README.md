@@ -378,7 +378,7 @@ Options: `--mahony-kp`, `--mahony-ki`, `--madgwick-beta`, `--calib-seconds`,
 The `3D/` folder contains the FreeCAD models: the PCB model, two enclosure parts,
 and the full assembly.
 
-![3D preview](3D/preview.png)
+![3D preview](3D/open_imu.png)
 
 See [3D/README.md](3D/README.md) for the file list.
 
