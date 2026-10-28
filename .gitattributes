@@ -1,0 +1,3 @@
+# FreeCAD documents are binary (zip) archives: no EOL conversion, no text diff.
+*.FCStd binary
+*.fcstd binary
