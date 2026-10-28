@@ -344,11 +344,13 @@ class LivePlot:
 
         self.plt = plt
         plt.ion()
-        self.fig = plt.figure("open_imu AHRS demo", figsize=(12, 8))
-        self.ax3d = self.fig.add_subplot(2, 2, 1, projection="3d")
-        self.ax_acc = self.fig.add_subplot(2, 2, 2)
-        self.ax_roll = self.fig.add_subplot(2, 2, 3)
-        self.ax_pitch = self.fig.add_subplot(2, 2, 4)
+        self.fig = plt.figure("open_imu AHRS demo", figsize=(12, 9))
+        gs = self.fig.add_gridspec(3, 2, height_ratios=[1.25, 1.0, 1.0])
+        self.ax3d = self.fig.add_subplot(gs[0, 0], projection="3d")
+        self.ax_acc = self.fig.add_subplot(gs[0, 1])
+        self.ax_roll = self.fig.add_subplot(gs[1, 0])
+        self.ax_pitch = self.fig.add_subplot(gs[1, 1])
+        self.ax_yaw = self.fig.add_subplot(gs[2, :])
 
         # 3-D attitude: world triad (grey) + body Z/X per filter.
         self.ax3d.set_xlim(-1, 1)
@@ -390,6 +392,16 @@ class LivePlot:
                                                   label=n)[0] for n in FILTER_NAMES}
         self.ax_roll.legend(loc="upper right", fontsize=7)
 
+        # Yaw is unobservable from the accelerometer, so on a static board its
+        # slope is exactly the residual gyro bias - this is the drift to watch.
+        self.ax_yaw.set_title("yaw [deg] (unwrapped; slope = gyro drift)")
+        self.ax_yaw.set_xlabel("time [s]")
+        self.ax_yaw.set_ylabel("deg")
+        self.ax_yaw.grid(True, alpha=0.3)
+        self.yaw_lines = {n: self.ax_yaw.plot([], [], color=FILTER_COLORS[n], lw=1.4,
+                                              label=n)[0] for n in FILTER_NAMES}
+        self.ax_yaw.legend(loc="upper left", fontsize=7)
+
     def update(self, hist_t, hist_euler, hist_acc, filters, seq, rate, temp):
         t = np.asarray(hist_t)
         if len(t) == 0:
@@ -405,22 +417,37 @@ class LivePlot:
         for i, key in enumerate(("ax", "ay", "az", "mag")):
             self.acc_lines[i].set_data(t, np.asarray(hist_acc[key]))
 
+        yaw6 = 0.0
+        yaw_unwrapped6 = None
         for name in FILTER_NAMES:
-            self.roll_lines[name].set_data(t, np.degrees(np.asarray(hist_euler[name])[:, 0]))
-            self.pitch_lines[name].set_data(t, np.degrees(np.asarray(hist_euler[name])[:, 1]))
+            e = np.degrees(np.asarray(hist_euler[name]))
+            self.roll_lines[name].set_data(t, e[:, 0])
+            self.pitch_lines[name].set_data(t, e[:, 1])
+            yaw_unwrapped = np.degrees(np.unwrap(np.radians(e[:, 2])))
+            self.yaw_lines[name].set_data(t, yaw_unwrapped)
+            if name == "sixaxis":
+                yaw6 = float(yaw_unwrapped[-1])
+                yaw_unwrapped6 = yaw_unwrapped
 
-        for ax in (self.ax_acc, self.ax_roll, self.ax_pitch):
+        for ax in (self.ax_acc, self.ax_roll, self.ax_pitch, self.ax_yaw):
             ax.relim()
             ax.autoscale_view()
 
-        d_ms = float(np.linalg.norm(filters["sixaxis"].q - filters["mahony"].q))
-        d_mg = float(np.linalg.norm(filters["sixaxis"].q - filters["madgwick"].q))
+        # Static-board yaw drift rate over the last ~2 s of history.
+        yaw_rate = 0.0
+        if yaw_unwrapped6 is not None and len(t) > 20:
+            n2 = min(len(t), 1600)
+            span = t[-1] - t[-n2]
+            if span > 0.5:
+                yaw_rate = (yaw_unwrapped6[-1] - yaw_unwrapped6[-n2]) / span
+
         ang_mh = quat_angle_deg(filters["mahony"].q, filters["sixaxis"].q)
         ang_mg = quat_angle_deg(filters["madgwick"].q, filters["sixaxis"].q)
+        bias_z = math.degrees(filters["sixaxis"].bias[2])
         self.fig.suptitle(
-            f"seq {seq} | {rate:.0f} Hz | T {temp:.1f} C | SixAxis trust {filters['sixaxis'].trust:.2f}"
-            f" | dq(Mahony,SixAxis) {ang_mh:.1f} deg, dq(Madgwick,SixAxis) {ang_mg:.1f} deg"
-            f" | |dq| {d_ms:.3f}/{d_mg:.3f}",
+            f"seq {seq} | {rate:.0f} Hz | yaw {yaw6:+.2f} deg ({yaw_rate:+.3f} deg/s)"
+            f" | gyro bias Z {bias_z:+.4f} deg/s | trust {filters['sixaxis'].trust:.2f}"
+            f" | dq(SixAxis vs Mahony/Madgwick) {ang_mh:.2f}/{ang_mg:.2f} deg",
             fontsize=9,
         )
         self.fig.canvas.draw_idle()
@@ -569,9 +596,9 @@ def main():
                 e = {n: np.degrees(np.asarray(hist_euler[n][-1])) if hist_euler[n] else (0, 0, 0)
                      for n in FILTER_NAMES}
                 print(f"seq {last_seq} {rate:5.0f} Hz | "
-                      f"roll {e['sixaxis'][0]:7.2f} pitch {e['sixaxis'][1]:7.2f} | "
-                      f"Mahony {e['mahony'][0]:7.2f}/{e['mahony'][1]:7.2f} | "
-                      f"Madgwick {e['madgwick'][0]:7.2f}/{e['madgwick'][1]:7.2f} | "
+                      f"r/p/y {e['sixaxis'][0]:7.2f}/{e['sixaxis'][1]:7.2f}/{e['sixaxis'][2]:+8.2f} | "
+                      f"Mahony {e['mahony'][0]:7.2f}/{e['mahony'][1]:7.2f}/{e['mahony'][2]:+8.2f} | "
+                      f"Madgwick {e['madgwick'][0]:7.2f}/{e['madgwick'][1]:7.2f}/{e['madgwick'][2]:+8.2f} | "
                       f"|a| {hist_acc['mag'][-1] if hist_acc['mag'] else 0:5.2f} m/s^2")
                 last_print = now
             else:

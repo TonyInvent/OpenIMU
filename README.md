@@ -337,8 +337,10 @@ estimators on the same data, so they can be compared live:
 | **Madgwick** | gradient-descent AHRS (`--madgwick-beta`) |
 | **SixAxis** | port of BeijingDynamics `open_sprite_runtime` `native/src/imu_six_axis.hpp`: proportional correction with a startup static gyro bias and an accelerometer trust window (no magnetometer) |
 
-It shows a 3-D attitude view, the roll/pitch comparison and the world-frame
-linear ("motion") acceleration.
+It shows a 3-D attitude view, the roll/pitch/yaw comparison and the world-frame
+linear ("motion") acceleration. Yaw cannot be observed from the accelerometer,
+so on a static board its **slope is exactly the residual gyro bias** - use the
+bottom yaw plot (and the `yaw ... (deg/s)` readout) to assess static drift.
 
 ### 8.1 Install
 

@@ -328,7 +328,9 @@ print(seq, [a / 8192.0 for a in acc], [g / 16.4 for g in gyr], tmp / 132.48 + 25
 | **Madgwick** | 梯度下降 AHRS（`--madgwick-beta`） |
 | **SixAxis** | 移植自 BeijingDynamics `open_sprite_runtime` 的 `native/src/imu_six_axis.hpp`：比例修正 + 启动静态陀螺偏置 + 加速度计信任窗口（无磁力计） |
 
-界面显示 3D 姿态、roll/pitch 对比，以及世界系下的线（运动）加速度。
+界面显示 3D 姿态、roll/pitch/yaw 对比，以及世界系下的线（运动）加速度。6 轴融合无法从
+加速度计观测 yaw，所以静置时 **yaw 曲线的斜率就是残余陀螺偏置**——底部 yaw 图和标题栏的
+`yaw ... (deg/s)` 读数可直接用来评估静态漂移。
 
 ### 8.1 安装依赖
 
