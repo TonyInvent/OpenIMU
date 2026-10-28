@@ -592,6 +592,11 @@ def main():
                     last_redraw = now
                     if not plot.alive():
                         running = False
+                # Console yaw readout (easy to watch while aligning the board).
+                if now - last_print > 0.25:
+                    r, p, y = np.degrees(quat_to_euler(filters["sixaxis"].q))
+                    print(f"yaw {y:+8.2f} deg   (roll {r:+7.2f}, pitch {p:+7.2f})")
+                    last_print = now
             elif now - last_print > 0.2:
                 e = {n: np.degrees(np.asarray(hist_euler[n][-1])) if hist_euler[n] else (0, 0, 0)
                      for n in FILTER_NAMES}
