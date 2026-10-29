@@ -389,10 +389,11 @@ The window has a **Reset v / p** button that zeroes the velocity/position
 integration (and restarts their plots), so a new movement test can start
 without restarting the demo.
 
-Add `--zupt` to enable a **zero-velocity update**: when `|gyro|` and `| |a| - g |`
-stay below thresholds for a short window, the velocity is forced to zero, so the
-position stops drifting while the board is at rest. Tune the detector with
-`--zupt-gyro-th`, `--zupt-accel-th` and `--zupt-window`.
+A **zero-velocity update (ZUPT)** is enabled by default: when `|gyro|` and
+`| |a| - g |` stay below thresholds for a short window, **both the velocity and
+the position are reset to zero** - the demo only cares about short-term
+displacement, so every stop re-anchors the origin. Use `--no-zupt` to disable it,
+and `--zupt-gyro-th` / `--zupt-accel-th` / `--zupt-window` to tune the detector.
 
 ---
 

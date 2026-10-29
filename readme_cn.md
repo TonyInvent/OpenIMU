@@ -373,9 +373,9 @@ python tools/gyro_dead_reckoning.py -i pcan -c PCAN_USBBUS1
 窗口底部有 **Reset v / p** 按钮，点击即可把速度和位移积分清零（并重画这两条曲线），
 方便在不重启 demo 的情况下开始新的运动测试。
 
-加 `--zupt` 可开启**零速检测**：当 `|陀螺|` 与 `| |a| - g |` 在短窗口内持续低于阈值时，
-速度被强制清零，板子静止时位移不再漂移。检测阈值可用 `--zupt-gyro-th`、
-`--zupt-accel-th`、`--zupt-window` 调整。
+默认开启**零速检测（ZUPT）**：当 `|陀螺|` 与 `| |a| - g |` 在短窗口内持续低于阈值时，
+**速度与位移都清零**——这个 demo 只关心短时位移，所以每次停下都把原点重新锚定。
+用 `--no-zupt` 关闭，用 `--zupt-gyro-th`、`--zupt-accel-th`、`--zupt-window` 调整检测阈值。
 
 ---
 

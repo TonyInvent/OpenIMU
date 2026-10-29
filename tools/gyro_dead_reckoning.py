@@ -266,8 +266,8 @@ def parse_args():
     p.add_argument("--simulate", action="store_true", help="synthetic source")
     p.add_argument("--duration", type=float, default=0.0, help="stop after N s (0 = forever)")
     p.add_argument("--history", type=float, default=60.0, help="plot history [s]")
-    p.add_argument("--zupt", action="store_true",
-                   help="enable zero-velocity update (zero the velocity while stationary)")
+    p.add_argument("--no-zupt", action="store_true",
+                   help="disable the zero-velocity update (ZUPT is on by default)")
     p.add_argument("--zupt-gyro-th", type=float, default=0.05, help="ZUPT gyro threshold [rad/s]")
     p.add_argument("--zupt-accel-th", type=float, default=0.20,
                    help="ZUPT | |a|-g | threshold [m/s^2]")
@@ -325,9 +325,11 @@ def main():
     att.initialize(accel0)
 
     zupt = None
-    if args.zupt:
+    if args.no_zupt:
+        print("ZUPT disabled (--no-zupt)")
+    else:
         zupt = ZuptDetector(args.zupt_gyro_th, args.zupt_accel_th, args.zupt_window)
-        print(f"ZUPT enabled: |gyro| < {args.zupt_gyro_th} rad/s, "
+        print(f"ZUPT enabled (on by default): |gyro| < {args.zupt_gyro_th} rad/s, "
               f"||a|-g| < {args.zupt_accel_th} m/s^2 over {args.zupt_window} s")
 
     # ---- state -------------------------------------------------------------
@@ -366,7 +368,10 @@ def main():
                         vel[:] = vel + a_w * dt
                         zupt_on = zupt is not None and zupt.update(t, accel, gyro)
                         if zupt_on:
+                            # Short-term displacement only: at rest, re-anchor
+                            # both the velocity and the position to zero.
                             vel[:] = 0.0
+                            pos[:] = 0.0
                         pos[:] = pos + vel * dt
                         hist_t.append(t)
                         hist_acc["ax"].append(a_w[0])
