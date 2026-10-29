@@ -167,6 +167,18 @@ class LivePlot:
         self.ax_txt.axis("off")
         self.txt = self.ax_txt.text(0.02, 0.98, "", va="top", family="monospace", fontsize=9)
 
+        # Reset button: zero the velocity/position integration (acceleration
+        # history is kept so you can keep watching the raw signal).
+        from matplotlib.widgets import Button
+        self.reset_requested = False
+        self.fig.subplots_adjust(bottom=0.10)
+        btn_ax = self.fig.add_axes([0.42, 0.02, 0.16, 0.04])
+        self.reset_button = Button(btn_ax, "Reset v / p", color="#ffd9d9", hovercolor="#ffb3b3")
+        self.reset_button.on_clicked(self._on_reset)
+
+    def _on_reset(self, event):
+        self.reset_requested = True
+
     def update(self, hist_t, hist_acc, hist_vel, hist_pos, q, info):
         t = np.asarray(hist_t)
         if len(t) == 0:
@@ -344,6 +356,17 @@ def main():
                 f"  p        ({pos[0]:+.4f}, {pos[1]:+.4f}, {pos[2]:+.4f}) m\n"
                 f"  |p|      {p_mag:8.4f} m\n"
             )
+
+            if plot is not None and plot.reset_requested:
+                plot.reset_requested = False
+                vel[:] = 0.0
+                pos[:] = 0.0
+                t_motion = None
+                hist_t.clear()
+                for d in (hist_acc, hist_vel, hist_pos):
+                    for k in d:
+                        d[k].clear()
+                print("-- velocity / position integration reset --")
 
             if plot is not None:
                 if now - last_redraw > 0.05:

@@ -385,6 +385,10 @@ path):
 python tools/gyro_dead_reckoning.py -i pcan -c PCAN_USBBUS1
 ```
 
+The window has a **Reset v / p** button that zeroes the velocity/position
+integration (and restarts their plots), so a new movement test can start
+without restarting the demo.
+
 ---
 
 ## 9. 3D-Printed Enclosure (FreeCAD)

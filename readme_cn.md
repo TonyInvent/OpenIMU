@@ -370,6 +370,9 @@ python tools/ahrs_demo.py --simulate
 python tools/gyro_dead_reckoning.py -i pcan -c PCAN_USBBUS1
 ```
 
+窗口底部有 **Reset v / p** 按钮，点击即可把速度和位移积分清零（并重画这两条曲线），
+方便在不重启 demo 的情况下开始新的运动测试。
+
 ---
 
 ## 9. 3D 打印外壳（FreeCAD）
