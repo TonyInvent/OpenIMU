@@ -54,6 +54,37 @@ class GyroOnly:
         return self.q
 
 
+class ZuptDetector:
+    """Zero-velocity detector (gyro + accelerometer magnitude thresholds).
+
+    A sample is "still" when |gyro| < gyro_th and | |a| - g | < accel_th.
+    ZUPT is active when >= 90 % of the samples in the last `window_s` are still.
+    """
+
+    def __init__(self, gyro_th=0.05, accel_th=0.20, window_s=0.2):
+        self.gyro_th = gyro_th
+        self.accel_th = accel_th
+        self.window_s = window_s
+        self.buf = deque()
+        self.active = False
+        self.count = 0
+
+    def update(self, t, accel, gyro):
+        still = (float(np.linalg.norm(gyro)) < self.gyro_th and
+                 abs(float(np.linalg.norm(accel)) - GRAVITY) < self.accel_th)
+        self.buf.append((t, still))
+        while self.buf and (t - self.buf[0][0]) > self.window_s:
+            self.buf.popleft()
+        was = self.active
+        if len(self.buf) < 5:
+            self.active = False
+        else:
+            self.active = sum(1 for _, s in self.buf if s) >= 0.9 * len(self.buf)
+        if self.active and not was:
+            self.count += 1
+        return self.active
+
+
 # ---------------------------------------------------------------------------
 # Synthetic source (for testing without hardware)
 # ---------------------------------------------------------------------------
@@ -83,8 +114,14 @@ class SimSource(threading.Thread):
                 w = np.zeros(3)
                 a_w = np.zeros(3)
             else:
-                w = omega
-                a_w = a_lin * math.cos(2.0 * math.pi * 0.2 * (now - self.static_until))
+                # Alternate: 3 s moving, 2 s static (so ZUPT has something to do).
+                phase = (now - self.static_until) % 5.0
+                if phase < 3.0:
+                    w = omega
+                    a_w = a_lin * math.cos(2.0 * math.pi * 0.2 * phase)
+                else:
+                    w = np.zeros(3)
+                    a_w = np.zeros(3)
             q = quat_integrate(q, w, dt)
             # f = a - g  (specific force), body frame
             f_body = quat_to_rot(q).T @ (a_w + np.array([0.0, 0.0, GRAVITY]))
@@ -229,6 +266,12 @@ def parse_args():
     p.add_argument("--simulate", action="store_true", help="synthetic source")
     p.add_argument("--duration", type=float, default=0.0, help="stop after N s (0 = forever)")
     p.add_argument("--history", type=float, default=60.0, help="plot history [s]")
+    p.add_argument("--zupt", action="store_true",
+                   help="enable zero-velocity update (zero the velocity while stationary)")
+    p.add_argument("--zupt-gyro-th", type=float, default=0.05, help="ZUPT gyro threshold [rad/s]")
+    p.add_argument("--zupt-accel-th", type=float, default=0.20,
+                   help="ZUPT | |a|-g | threshold [m/s^2]")
+    p.add_argument("--zupt-window", type=float, default=0.2, help="ZUPT detection window [s]")
     p.add_argument("--no-plot", action="store_true", help="console output only")
     return p.parse_args()
 
@@ -281,6 +324,12 @@ def main():
     att.bias = bias
     att.initialize(accel0)
 
+    zupt = None
+    if args.zupt:
+        zupt = ZuptDetector(args.zupt_gyro_th, args.zupt_accel_th, args.zupt_window)
+        print(f"ZUPT enabled: |gyro| < {args.zupt_gyro_th} rad/s, "
+              f"||a|-g| < {args.zupt_accel_th} m/s^2 over {args.zupt_window} s")
+
     # ---- state -------------------------------------------------------------
     vel = np.zeros(3)
     pos = np.zeros(3)
@@ -297,6 +346,7 @@ def main():
     t_motion = None
     running = True
     last_seq = 0
+    zupt_on = False
 
     try:
         while running:
@@ -314,6 +364,9 @@ def main():
                         rot = quat_to_rot(att.q)
                         a_w = rot @ accel + np.array([0.0, 0.0, -GRAVITY])
                         vel[:] = vel + a_w * dt
+                        zupt_on = zupt is not None and zupt.update(t, accel, gyro)
+                        if zupt_on:
+                            vel[:] = 0.0
                         pos[:] = pos + vel * dt
                         hist_t.append(t)
                         hist_acc["ax"].append(a_w[0])
@@ -336,6 +389,7 @@ def main():
             v_mag = float(np.linalg.norm(vel))
             p_mag = float(np.linalg.norm(pos))
             drift = v_mag / elapsed if elapsed > 0.5 else 0.0
+            zupt_str = "disabled" if zupt is None else f"{'ON ' if zupt_on else 'off'} (x{zupt.count})"
             info = (
                 f"calibration            \n"
                 f"  |a|      {np.linalg.norm(accel0):8.3f} m/s^2\n"
@@ -355,6 +409,7 @@ def main():
                 f"  |v|/t    {drift:8.4f} m/s^2\n"
                 f"  p        ({pos[0]:+.4f}, {pos[1]:+.4f}, {pos[2]:+.4f}) m\n"
                 f"  |p|      {p_mag:8.4f} m\n"
+                f"  zupt     {zupt_str}\n"
             )
 
             if plot is not None and plot.reset_requested:
@@ -377,13 +432,13 @@ def main():
                 if now - last_print > 0.5:
                     print(f"t {elapsed:7.2f} s | v ({vel[0]:+.4f}, {vel[1]:+.4f}, "
                           f"{vel[2]:+.4f}) m/s | |v| {v_mag:.4f} m/s | "
-                          f"|p| {p_mag:.4f} m")
+                          f"|p| {p_mag:.4f} m | zupt {zupt_str}")
                     last_print = now
             elif now - last_print > 0.5:
                 print(f"t {elapsed:7.2f} s | r/p/y {r:+7.2f}/{p:+7.2f}/{y:+7.2f} | "
                       f"|a| {hist_acc['mag'][-1] if hist_acc['mag'] else 0:7.4f} m/s^2 | "
                       f"v ({vel[0]:+.4f}, {vel[1]:+.4f}, {vel[2]:+.4f}) | |v| {v_mag:.4f} m/s | "
-                      f"|p| {p_mag:.4f} m")
+                      f"|p| {p_mag:.4f} m | zupt {zupt_str}")
                 last_print = now
             else:
                 time.sleep(0.002)

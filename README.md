@@ -389,6 +389,11 @@ The window has a **Reset v / p** button that zeroes the velocity/position
 integration (and restarts their plots), so a new movement test can start
 without restarting the demo.
 
+Add `--zupt` to enable a **zero-velocity update**: when `|gyro|` and `| |a| - g |`
+stay below thresholds for a short window, the velocity is forced to zero, so the
+position stops drifting while the board is at rest. Tune the detector with
+`--zupt-gyro-th`, `--zupt-accel-th` and `--zupt-window`.
+
 ---
 
 ## 9. 3D-Printed Enclosure (FreeCAD)
