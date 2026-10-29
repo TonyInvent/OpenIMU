@@ -395,6 +395,11 @@ the position are reset to zero** - the demo only cares about short-term
 displacement, so every stop re-anchors the origin. Use `--no-zupt` to disable it,
 and `--zupt-gyro-th` / `--zupt-accel-th` / `--zupt-window` to tune the detector.
 
+While ZUPT is active the gyro reading *is* the bias, so the demo also **tracks the
+bias slowly online** (`--bias-tau`, default 2 s). That compensates the gyro's
+temperature drift, and it lets the startup calibration be short (`--calib-seconds`,
+default 2 s) - a reset no longer needs a long static window.
+
 ---
 
 ## 9. 3D-Printed Enclosure (FreeCAD)

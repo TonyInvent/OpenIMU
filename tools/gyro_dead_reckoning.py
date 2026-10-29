@@ -103,6 +103,7 @@ class SimSource(threading.Thread):
         q = np.array([1.0, 0.0, 0.0, 0.0])
         omega = np.array([0.15, 0.08, 0.22])          # rad/s tumble
         a_lin = np.array([0.40, 0.20, 0.0])           # m/s^2, world frame
+        bias0 = np.array([0.02, -0.01, 0.015])        # rad/s, slowly drifting
         last = time.perf_counter()
         while self.running:
             now = time.perf_counter()
@@ -126,7 +127,8 @@ class SimSource(threading.Thread):
             # f = a - g  (specific force), body frame
             f_body = quat_to_rot(q).T @ (a_w + np.array([0.0, 0.0, GRAVITY]))
             self.seq += 1
-            self.samples.append((now, self.seq, f_body, w.copy(), 25.0))
+            bias_now = bias0 + 0.006 * np.sin(2.0 * math.pi * 0.02 * now + np.array([0.0, 1.0, 2.0]))
+            self.samples.append((now, self.seq, f_body, w + bias_now, 25.0))
             time.sleep(1.0 / 800.0)
 
     def stop(self):
@@ -261,8 +263,10 @@ def parse_args():
     p.add_argument("-i", "--interface", default="auto", choices=("auto", "socketcan", "pcan"))
     p.add_argument("-c", "--channel", default=None)
     p.add_argument("--f-clock", type=int, default=80_000_000, help="PCAN FD clock [Hz]")
-    p.add_argument("--calib-seconds", type=float, default=10.0,
-                   help="static window for the gyro bias")
+    p.add_argument("--calib-seconds", type=float, default=2.0,
+                   help="static window for the initial gyro bias")
+    p.add_argument("--bias-tau", type=float, default=2.0,
+                   help="time constant of the ZUPT-based online gyro-bias tracking [s] (0 = off)")
     p.add_argument("--simulate", action="store_true", help="synthetic source")
     p.add_argument("--duration", type=float, default=0.0, help="stop after N s (0 = forever)")
     p.add_argument("--history", type=float, default=60.0, help="plot history [s]")
@@ -330,7 +334,8 @@ def main():
     else:
         zupt = ZuptDetector(args.zupt_gyro_th, args.zupt_accel_th, args.zupt_window)
         print(f"ZUPT enabled (on by default): |gyro| < {args.zupt_gyro_th} rad/s, "
-              f"||a|-g| < {args.zupt_accel_th} m/s^2 over {args.zupt_window} s")
+              f"||a|-g| < {args.zupt_accel_th} m/s^2 over {args.zupt_window} s"
+              + (f", online bias tracking tau={args.bias_tau} s" if args.bias_tau > 0 else ""))
 
     # ---- state -------------------------------------------------------------
     vel = np.zeros(3)
@@ -372,6 +377,11 @@ def main():
                             # both the velocity and the position to zero.
                             vel[:] = 0.0
                             pos[:] = 0.0
+                            if args.bias_tau > 0.0:
+                                # While stationary the gyro IS the bias, so track
+                                # it slowly - this compensates temperature drift.
+                                a = min(1.0, dt / args.bias_tau)
+                                att.bias += (gyro - att.bias) * a
                         pos[:] = pos + vel * dt
                         hist_t.append(t)
                         hist_acc["ax"].append(a_w[0])
@@ -400,8 +410,8 @@ def main():
                 f"  |a|      {np.linalg.norm(accel0):8.3f} m/s^2\n"
                 f"  roll     {roll_deg:+8.2f} deg\n"
                 f"  pitch    {pitch_deg:+8.2f} deg\n"
-                f"  bias     ({np.degrees(bias[0]):+.4f}, {np.degrees(bias[1]):+.4f}, "
-                f"{np.degrees(bias[2]):+.4f}) deg/s\n"
+                f"  bias     ({np.degrees(att.bias[0]):+.4f}, {np.degrees(att.bias[1]):+.4f}, "
+                f"{np.degrees(att.bias[2]):+.4f}) deg/s\n"
                 f"  noise    ({np.degrees(gyro_std[0]):.4f}, {np.degrees(gyro_std[1]):.4f}, "
                 f"{np.degrees(gyro_std[2]):.4f}) deg/s\n"
                 f"\n"
@@ -437,13 +447,13 @@ def main():
                 if now - last_print > 0.5:
                     print(f"t {elapsed:7.2f} s | v ({vel[0]:+.4f}, {vel[1]:+.4f}, "
                           f"{vel[2]:+.4f}) m/s | |v| {v_mag:.4f} m/s | "
-                          f"|p| {p_mag:.4f} m | zupt {zupt_str}")
+                          f"|p| {p_mag:.4f} m | zupt {zupt_str} | bZ {np.degrees(att.bias[2]):+.4f} deg/s")
                     last_print = now
             elif now - last_print > 0.5:
                 print(f"t {elapsed:7.2f} s | r/p/y {r:+7.2f}/{p:+7.2f}/{y:+7.2f} | "
                       f"|a| {hist_acc['mag'][-1] if hist_acc['mag'] else 0:7.4f} m/s^2 | "
                       f"v ({vel[0]:+.4f}, {vel[1]:+.4f}, {vel[2]:+.4f}) | |v| {v_mag:.4f} m/s | "
-                      f"|p| {p_mag:.4f} m | zupt {zupt_str}")
+                      f"|p| {p_mag:.4f} m | zupt {zupt_str} | bZ {np.degrees(att.bias[2]):+.4f} deg/s")
                 last_print = now
             else:
                 time.sleep(0.002)

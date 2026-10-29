@@ -377,6 +377,10 @@ python tools/gyro_dead_reckoning.py -i pcan -c PCAN_USBBUS1
 **速度与位移都清零**——这个 demo 只关心短时位移，所以每次停下都把原点重新锚定。
 用 `--no-zupt` 关闭，用 `--zupt-gyro-th`、`--zupt-accel-th`、`--zupt-window` 调整检测阈值。
 
+ZUPT 生效期间陀螺读数就是零偏，所以还会**在线慢速跟踪零偏**（`--bias-tau`，默认 2 s）：
+这能补偿陀螺随工作温度的漂移，启动标定也就可以很短（`--calib-seconds`，默认 2 s）——
+reset 之后不再需要长时间静置。
+
 ---
 
 ## 9. 3D 打印外壳（FreeCAD）
