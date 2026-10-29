@@ -361,26 +361,6 @@ python tools/ahrs_demo.py --simulate
 
 可选参数：`--mahony-kp`、`--mahony-ki`、`--madgwick-beta`、`--calib-seconds`、`--history`、`--log samples.csv`、`--f-clock`（PCAN 时钟，默认 80 MHz）。
 
-`tools/gyro_dead_reckoning.py` 是配套的「纯陀螺航位推算」demo：先做 10 s 静态标定
-（估计陀螺偏置 + 用重力算 roll/pitch，yaw 置 0），之后**只用陀螺**做四元数积分；
-再用这个姿态把加速度转到世界系、去掉重力，积分一次得到**速度**、再积分一次得到**位移**，
-用来观察开环积分的漂移水平（界面会画出 X-Y 漂移轨迹）：
-
-```bash
-python tools/gyro_dead_reckoning.py -i pcan -c PCAN_USBBUS1
-```
-
-窗口底部有 **Reset v / p** 按钮，点击即可把速度和位移积分清零（并重画这两条曲线），
-方便在不重启 demo 的情况下开始新的运动测试。
-
-默认开启**零速检测（ZUPT）**：当 `|陀螺|` 与 `| |a| - g |` 在短窗口内持续低于阈值时，
-**速度与位移都清零**——这个 demo 只关心短时位移，所以每次停下都把原点重新锚定。
-用 `--no-zupt` 关闭，用 `--zupt-gyro-th`、`--zupt-accel-th`、`--zupt-window` 调整检测阈值。
-
-ZUPT 生效期间陀螺读数就是零偏，所以还会**在线慢速跟踪零偏**（`--bias-tau`，默认 2 s）：
-这能补偿陀螺随工作温度的漂移，启动标定也就可以很短（`--calib-seconds`，默认 2 s）——
-reset 之后不再需要长时间静置。
-
 ---
 
 ## 9. 3D 打印外壳（FreeCAD）

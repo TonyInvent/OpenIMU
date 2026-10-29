@@ -373,33 +373,6 @@ demo estimates the gyro bias from that window and initialises all three filters.
 Options: `--mahony-kp`, `--mahony-ki`, `--madgwick-beta`, `--calib-seconds`,
 `--history`, `--log samples.csv`, `--f-clock` (PCAN clock, default 80 MHz).
 
-`tools/gyro_dead_reckoning.py` is a companion demo that removes the
-accelerometer correction entirely: a 10 s static calibration (gyro bias +
-roll/pitch from gravity, yaw = 0), then **gyro-only** quaternion integration.
-The resulting attitude rotates the accelerometer into the world frame, gravity
-is subtracted, and the acceleration is integrated once for **velocity** and once
-more for **displacement** (both drift open-loop; the plot shows the X-Y drift
-path):
-
-```bash
-python tools/gyro_dead_reckoning.py -i pcan -c PCAN_USBBUS1
-```
-
-The window has a **Reset v / p** button that zeroes the velocity/position
-integration (and restarts their plots), so a new movement test can start
-without restarting the demo.
-
-A **zero-velocity update (ZUPT)** is enabled by default: when `|gyro|` and
-`| |a| - g |` stay below thresholds for a short window, **both the velocity and
-the position are reset to zero** - the demo only cares about short-term
-displacement, so every stop re-anchors the origin. Use `--no-zupt` to disable it,
-and `--zupt-gyro-th` / `--zupt-accel-th` / `--zupt-window` to tune the detector.
-
-While ZUPT is active the gyro reading *is* the bias, so the demo also **tracks the
-bias slowly online** (`--bias-tau`, default 2 s). That compensates the gyro's
-temperature drift, and it lets the startup calibration be short (`--calib-seconds`,
-default 2 s) - a reset no longer needs a long static window.
-
 ---
 
 ## 9. 3D-Printed Enclosure (FreeCAD)
