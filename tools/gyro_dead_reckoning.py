@@ -167,8 +167,8 @@ class LivePlot:
         self.ax_txt.axis("off")
         self.txt = self.ax_txt.text(0.02, 0.98, "", va="top", family="monospace", fontsize=9)
 
-        # Reset button: zero the velocity/position integration (acceleration
-        # history is kept so you can keep watching the raw signal).
+        # Reset button: zero the velocity/position integration and restart the
+        # plots from zero.
         from matplotlib.widgets import Button
         self.reset_requested = False
         self.fig.subplots_adjust(bottom=0.10)
