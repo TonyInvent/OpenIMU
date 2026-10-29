@@ -84,7 +84,7 @@ class SimSource(threading.Thread):
                 a_w = np.zeros(3)
             else:
                 w = omega
-                a_w = a_lin * math.sin(2.0 * math.pi * 0.2 * now)
+                a_w = a_lin * math.cos(2.0 * math.pi * 0.2 * (now - self.static_until))
             q = quat_integrate(q, w, dt)
             # f = a - g  (specific force), body frame
             f_body = quat_to_rot(q).T @ (a_w + np.array([0.0, 0.0, GRAVITY]))
@@ -106,11 +106,14 @@ class LivePlot:
 
         self.plt = plt
         plt.ion()
-        self.fig = plt.figure("open_imu gyro dead reckoning", figsize=(12, 8))
-        self.ax3d = self.fig.add_subplot(2, 2, 1, projection="3d")
-        self.ax_acc = self.fig.add_subplot(2, 2, 2)
-        self.ax_vel = self.fig.add_subplot(2, 2, 3)
-        self.ax_txt = self.fig.add_subplot(2, 2, 4)
+        self.fig = plt.figure("open_imu gyro dead reckoning", figsize=(14, 8))
+        gs = self.fig.add_gridspec(2, 3)
+        self.ax3d = self.fig.add_subplot(gs[0, 0], projection="3d")
+        self.ax_acc = self.fig.add_subplot(gs[0, 1])
+        self.ax_vel = self.fig.add_subplot(gs[0, 2])
+        self.ax_xy = self.fig.add_subplot(gs[1, 0])
+        self.ax_pos = self.fig.add_subplot(gs[1, 1])
+        self.ax_txt = self.fig.add_subplot(gs[1, 2])
 
         self.ax3d.set_xlim(-1, 1); self.ax3d.set_ylim(-1, 1); self.ax3d.set_zlim(-1, 1)
         self.ax3d.set_xlabel("X"); self.ax3d.set_ylabel("Y"); self.ax3d.set_zlabel("Z")
@@ -143,10 +146,28 @@ class LivePlot:
             self.vel_lines.append(ln)
         self.ax_vel.legend(loc="upper left", fontsize=7)
 
+        self.ax_xy.set_title("position X-Y [m] (drift path)")
+        self.ax_xy.set_xlabel("X [m]")
+        self.ax_xy.set_ylabel("Y [m]")
+        self.ax_xy.grid(True, alpha=0.3)
+        self.traj_line, = self.ax_xy.plot([], [], color="#1f77b4", lw=1.2)
+        self.traj_start, = self.ax_xy.plot([], [], marker="o", color="#2ca02c", ms=5)
+
+        self.ax_pos.set_title("position = integral(velocity)")
+        self.ax_pos.set_xlabel("time [s]")
+        self.ax_pos.set_ylabel("m")
+        self.ax_pos.grid(True, alpha=0.3)
+        self.pos_lines = []
+        for color, label in zip(("#1f77b4", "#ff7f0e", "#2ca02c", "0.3"),
+                                ("x", "y", "z", "|p|")):
+            ln, = self.ax_pos.plot([], [], color=color, lw=1.2, label=label)
+            self.pos_lines.append(ln)
+        self.ax_pos.legend(loc="upper left", fontsize=7)
+
         self.ax_txt.axis("off")
         self.txt = self.ax_txt.text(0.02, 0.98, "", va="top", family="monospace", fontsize=9)
 
-    def update(self, hist_t, hist_acc, hist_vel, q, info):
+    def update(self, hist_t, hist_acc, hist_vel, hist_pos, q, info):
         t = np.asarray(hist_t)
         if len(t) == 0:
             return
@@ -160,7 +181,16 @@ class LivePlot:
             self.acc_lines[i].set_data(t, np.asarray(hist_acc[key]))
         for i, key in enumerate(("vx", "vy", "vz", "mag")):
             self.vel_lines[i].set_data(t, np.asarray(hist_vel[key]))
-        for ax in (self.ax_acc, self.ax_vel):
+        for i, key in enumerate(("x", "y", "z", "mag")):
+            self.pos_lines[i].set_data(t, np.asarray(hist_pos[key]))
+
+        px = np.asarray(hist_pos["x"])
+        py = np.asarray(hist_pos["y"])
+        self.traj_line.set_data(px, py)
+        if len(px):
+            self.traj_start.set_data([px[0]], [py[0]])
+
+        for ax in (self.ax_acc, self.ax_vel, self.ax_pos, self.ax_xy):
             ax.relim()
             ax.autoscale_view()
 
@@ -241,9 +271,11 @@ def main():
 
     # ---- state -------------------------------------------------------------
     vel = np.zeros(3)
+    pos = np.zeros(3)
     hist_t = deque(maxlen=max(100, int(args.history * 1000)))
     hist_acc = {k: deque(maxlen=hist_t.maxlen) for k in ("ax", "ay", "az", "mag")}
     hist_vel = {k: deque(maxlen=hist_t.maxlen) for k in ("vx", "vy", "vz", "mag")}
+    hist_pos = {k: deque(maxlen=hist_t.maxlen) for k in ("x", "y", "z", "mag")}
 
     plot = None if args.no_plot else LivePlot()
     last_t = None
@@ -270,6 +302,7 @@ def main():
                         rot = quat_to_rot(att.q)
                         a_w = rot @ accel + np.array([0.0, 0.0, -GRAVITY])
                         vel[:] = vel + a_w * dt
+                        pos[:] = pos + vel * dt
                         hist_t.append(t)
                         hist_acc["ax"].append(a_w[0])
                         hist_acc["ay"].append(a_w[1])
@@ -279,12 +312,17 @@ def main():
                         hist_vel["vy"].append(vel[1])
                         hist_vel["vz"].append(vel[2])
                         hist_vel["mag"].append(float(np.linalg.norm(vel)))
+                        hist_pos["x"].append(pos[0])
+                        hist_pos["y"].append(pos[1])
+                        hist_pos["z"].append(pos[2])
+                        hist_pos["mag"].append(float(np.linalg.norm(pos)))
                 last_t = t
 
             now = time.perf_counter()
             elapsed = 0.0 if t_motion is None else now - t_motion
             r, p, y = np.degrees(quat_to_euler(att.q))
             v_mag = float(np.linalg.norm(vel))
+            p_mag = float(np.linalg.norm(pos))
             drift = v_mag / elapsed if elapsed > 0.5 else 0.0
             info = (
                 f"calibration            \n"
@@ -303,22 +341,26 @@ def main():
                 f"  v        ({vel[0]:+.4f}, {vel[1]:+.4f}, {vel[2]:+.4f}) m/s\n"
                 f"  |v|      {v_mag:8.4f} m/s\n"
                 f"  |v|/t    {drift:8.4f} m/s^2\n"
+                f"  p        ({pos[0]:+.4f}, {pos[1]:+.4f}, {pos[2]:+.4f}) m\n"
+                f"  |p|      {p_mag:8.4f} m\n"
             )
 
             if plot is not None:
                 if now - last_redraw > 0.05:
-                    plot.update(hist_t, hist_acc, hist_vel, att.q, info)
+                    plot.update(hist_t, hist_acc, hist_vel, hist_pos, att.q, info)
                     last_redraw = now
                     if not plot.alive():
                         running = False
                 if now - last_print > 0.5:
                     print(f"t {elapsed:7.2f} s | v ({vel[0]:+.4f}, {vel[1]:+.4f}, "
-                          f"{vel[2]:+.4f}) m/s | |v| {v_mag:.4f} m/s")
+                          f"{vel[2]:+.4f}) m/s | |v| {v_mag:.4f} m/s | "
+                          f"|p| {p_mag:.4f} m")
                     last_print = now
             elif now - last_print > 0.5:
                 print(f"t {elapsed:7.2f} s | r/p/y {r:+7.2f}/{p:+7.2f}/{y:+7.2f} | "
                       f"|a| {hist_acc['mag'][-1] if hist_acc['mag'] else 0:7.4f} m/s^2 | "
-                      f"v ({vel[0]:+.4f}, {vel[1]:+.4f}, {vel[2]:+.4f}) | |v| {v_mag:.4f} m/s")
+                      f"v ({vel[0]:+.4f}, {vel[1]:+.4f}, {vel[2]:+.4f}) | |v| {v_mag:.4f} m/s | "
+                      f"|p| {p_mag:.4f} m")
                 last_print = now
             else:
                 time.sleep(0.002)

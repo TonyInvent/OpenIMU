@@ -363,8 +363,8 @@ python tools/ahrs_demo.py --simulate
 
 `tools/gyro_dead_reckoning.py` 是配套的「纯陀螺航位推算」demo：先做 10 s 静态标定
 （估计陀螺偏置 + 用重力算 roll/pitch，yaw 置 0），之后**只用陀螺**做四元数积分；
-再用这个姿态把加速度转到世界系、去掉重力，积分一次得到**速度**，用来观察开环积分的
-漂移水平：
+再用这个姿态把加速度转到世界系、去掉重力，积分一次得到**速度**、再积分一次得到**位移**，
+用来观察开环积分的漂移水平（界面会画出 X-Y 漂移轨迹）：
 
 ```bash
 python tools/gyro_dead_reckoning.py -i pcan -c PCAN_USBBUS1

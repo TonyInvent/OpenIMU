@@ -377,8 +377,9 @@ Options: `--mahony-kp`, `--mahony-ki`, `--madgwick-beta`, `--calib-seconds`,
 accelerometer correction entirely: a 10 s static calibration (gyro bias +
 roll/pitch from gravity, yaw = 0), then **gyro-only** quaternion integration.
 The resulting attitude rotates the accelerometer into the world frame, gravity
-is subtracted, and the acceleration is integrated once to show how far the
-**velocity** drifts open-loop:
+is subtracted, and the acceleration is integrated once for **velocity** and once
+more for **displacement** (both drift open-loop; the plot shows the X-Y drift
+path):
 
 ```bash
 python tools/gyro_dead_reckoning.py -i pcan -c PCAN_USBBUS1
