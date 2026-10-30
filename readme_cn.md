@@ -318,19 +318,15 @@ print(seq, [a / 8192.0 for a in acc], [g / 16.4 for g in gyr], tmp / 132.48 + 25
 
 ---
 
-## 8. Python 姿态解算 Demo（Mahony / Madgwick / EKF / SixAxis）
+## 8. Python 姿态解算 Demo（Mahony / Madgwick / SixAxis）
 
-`tools/ahrs_demo.py` 读取 16 字节 CAN FD 数据，并在同一份数据上运行四种姿态估计，实时对比：
+`tools/ahrs_demo.py` 读取 16 字节 CAN FD 数据，并在同一份数据上运行三种姿态估计，实时对比：
 
 | 算法 | 说明 |
 |---|---|
-| **Mahony** | `ahrs.filters.Mahony`——非线性互补滤波（P + I） |
-| **Madgwick** | `ahrs.filters.Madgwick`——梯度下降 AHRS |
-| **EKF** | `ahrs.filters.EKF`——四元数误差状态卡尔曼滤波 |
+| **Mahony** | 非线性互补滤波，比例 + 积分修正 |
+| **Madgwick** | 梯度下降 AHRS（`--madgwick-beta`） |
 | **SixAxis** | 移植自 BeijingDynamics `open_sprite_runtime` 的 `native/src/imu_six_axis.hpp`：比例修正 + 启动静态陀螺偏置 + 加速度计信任窗口（无磁力计） |
-
-Mahony / Madgwick / EKF 来自 [Mayitzin/ahrs](https://github.com/Mayitzin/ahrs)
-（纯 numpy 的 AHRS 工具箱）；SixAxis 是 BeijingDynamics 实现的原样移植。
 
 界面显示 3D 姿态、roll/pitch/yaw 对比，以及世界系下的线（运动）加速度。6 轴融合无法从
 加速度计观测 yaw，所以静置时 **yaw 曲线的斜率就是残余陀螺偏置**——底部 yaw 图和标题栏的
@@ -339,7 +335,7 @@ Mahony / Madgwick / EKF 来自 [Mayitzin/ahrs](https://github.com/Mayitzin/ahrs)
 ### 8.1 安装依赖
 
 ```bash
-pip install python-can numpy matplotlib ahrs
+pip install python-can numpy matplotlib
 ```
 
 ### 8.2 运行
@@ -363,11 +359,24 @@ python tools/ahrs_demo.py --simulate
 
 标定窗口（默认 `--calib-seconds 2` 秒）内请**保持板子静止**：demo 会在这段时间估计陀螺偏置，并初始化三个滤波器。
 
-可选参数：`--mahony-kp`、`--mahony-ki`、`--madgwick-gain`、`--calib-seconds`、`--history`、`--log samples.csv`、`--f-clock`（PCAN 时钟，默认 80 MHz）。
+可选参数：`--mahony-kp`、`--mahony-ki`、`--madgwick-beta`、`--calib-seconds`、`--history`、`--log samples.csv`、`--f-clock`（PCAN 时钟，默认 80 MHz）。
 
-默认四个算法拿到的是**同一个已扣除标定偏置**的陀螺数据（启动窗口测到的偏置对所有人只扣一次）。
-加 `--raw-gyro` 则改为喂原始陀螺，此时只有 SixAxis 用内部标定偏置——这也正是各算法自身偏置处理
-能力（Mahony 的积分、EKF 的偏置状态、Madgwick 没有偏置状态）显现出来的时候。
+### 8.3 基于 ahrs 库的扩展对比：Mahony / Madgwick / EKF / SixAxis
+
+`tools/ahrs_lib_compare.py` 是另一个独立 demo：Mahony、Madgwick、四元数 EKF 取自
+[Mayitzin/ahrs](https://github.com/Mayitzin/ahrs)（纯 numpy），并保留本地移植的
+BeijingDynamics SixAxis，四种算法并排对比：
+
+```bash
+pip install ahrs
+python tools/ahrs_lib_compare.py -i pcan -c PCAN_USBBUS1   # Windows / PCAN
+python tools/ahrs_lib_compare.py -i socketcan -c can0      # Linux / SocketCAN
+python tools/ahrs_lib_compare.py --simulate                # 无硬件
+```
+
+默认四个算法拿到的是**同一个已扣除标定偏置**的陀螺数据（公平对比）；加 `--raw-gyro`
+则改为喂原始陀螺，此时只有 SixAxis 用内部标定偏置——这也正是各算法自身偏置处理能力
+（Mahony 的积分、EKF 的偏置状态、Madgwick 没有偏置状态）显现出来的时候。
 
 ---
 

@@ -326,20 +326,16 @@ print(seq, [a / 8192.0 for a in acc], [g / 16.4 for g in gyr], tmp / 132.48 + 25
 
 ---
 
-## 8. Python AHRS Demo (Mahony / Madgwick / EKF / SixAxis)
+## 8. Python AHRS Demo (Mahony / Madgwick / SixAxis)
 
-`tools/ahrs_demo.py` reads the 16-byte CAN FD stream and runs four attitude
+`tools/ahrs_demo.py` reads the 16-byte CAN FD stream and runs three attitude
 estimators on the same data, so they can be compared live:
 
 | Estimator | Notes |
 |---|---|
-| **Mahony** | `ahrs.filters.Mahony` - nonlinear complementary filter (P + I) |
-| **Madgwick** | `ahrs.filters.Madgwick` - gradient-descent AHRS |
-| **EKF** | `ahrs.filters.EKF` - quaternion error-state Kalman filter |
+| **Mahony** | nonlinear complementary filter, proportional + integral correction |
+| **Madgwick** | gradient-descent AHRS (`--madgwick-beta`) |
 | **SixAxis** | port of BeijingDynamics `open_sprite_runtime` `native/src/imu_six_axis.hpp`: proportional correction with a startup static gyro bias and an accelerometer trust window (no magnetometer) |
-
-Mahony, Madgwick and EKF come from [Mayitzin/ahrs](https://github.com/Mayitzin/ahrs),
-a numpy-only AHRS toolbox; SixAxis is a direct port of the BeijingDynamics one.
 
 It shows a 3-D attitude view, the roll/pitch/yaw comparison and the world-frame
 linear ("motion") acceleration. Yaw cannot be observed from the accelerometer,
@@ -349,7 +345,7 @@ bottom yaw plot (and the `yaw ... (deg/s)` readout) to assess static drift.
 ### 8.1 Install
 
 ```bash
-pip install python-can numpy matplotlib ahrs
+pip install python-can numpy matplotlib
 ```
 
 ### 8.2 Run
@@ -374,14 +370,28 @@ python tools/ahrs_demo.py --simulate
 Keep the board **still during the first `--calib-seconds`** (default 2 s): the
 demo estimates the gyro bias from that window and initialises all three filters.
 
-Options: `--mahony-kp`, `--mahony-ki`, `--madgwick-gain`, `--calib-seconds`,
+Options: `--mahony-kp`, `--mahony-ki`, `--madgwick-beta`, `--calib-seconds`,
 `--history`, `--log samples.csv`, `--f-clock` (PCAN clock, default 80 MHz).
 
-By default all four estimators get the same **bias-calibrated** gyro (the bias
-measured in the startup window is subtracted once, for everyone). `--raw-gyro`
-feeds the raw stream instead, in which case only SixAxis applies its internal
-calibration - that is also when each estimator's own bias handling shows up
-(Mahony's integral, EKF's bias state, Madgwick's lack of one).
+### 8.3 Library-based comparison: Mahony / Madgwick / EKF / SixAxis
+
+`tools/ahrs_lib_compare.py` is a separate, extended demo that takes Mahony,
+Madgwick and the quaternion EKF from the [Mayitzin/ahrs](https://github.com/Mayitzin/ahrs)
+library (numpy-only) and keeps the local BeijingDynamics SixAxis port, so four
+estimators can be compared side by side:
+
+```bash
+pip install ahrs
+python tools/ahrs_lib_compare.py -i pcan -c PCAN_USBBUS1   # Windows / PCAN
+python tools/ahrs_lib_compare.py -i socketcan -c can0      # Linux / SocketCAN
+python tools/ahrs_lib_compare.py --simulate                # no hardware
+```
+
+By default all four estimators get the same **bias-calibrated** gyro, which is
+the fair way to compare the algorithms; `--raw-gyro` feeds the raw stream
+instead, in which case only SixAxis applies its internal calibrated bias (that
+is when each estimator's own bias handling shows up: Mahony's integral, the
+EKF's bias state, Madgwick's lack of one).
 
 ---
 
