@@ -183,7 +183,10 @@ class OpenIMUReceiver(threading.Thread):
         self.last_seq = None
         self.total_frames = 0
         self.dropped_frames = 0
-        self.fps = 0.0
+        self.fps = 0.0          # processed frames per second
+        self.odr = 0.0          # frames actually arriving from the sensor
+        self.backlog = 0        # frames waiting in the queue (display latency)
+        self._recv_n = 0        # arrivals since the last rate update
         self.temp_c = 25.0
         self.acc_norm_g = 1.0
         self.calib_progress = 0.0
@@ -298,7 +301,10 @@ class OpenIMUReceiver(threading.Thread):
                 if now - rate_t0 >= 0.5:
                     with self.lock:
                         self.fps = rate_cnt / (now - rate_t0)
+                        self.odr = self._recv_n / (now - rate_t0)
+                        self.backlog = self._raw_q.qsize()
                     rate_cnt = 0
+                    self._recv_n = 0
                     rate_t0 = now
         finally:
             self.running = False
@@ -319,6 +325,7 @@ class OpenIMUReceiver(threading.Thread):
             gyro_rad = np.radians(np.array([gx, gy, gz], dtype=np.float64) / GYRO_SCALE)
             temp_c = raw_temp / TEMP_SCALE + TEMP_OFFSET
             self._raw_q.put((seq, acc_g, gyro_rad, temp_c))
+            self._recv_n += 1
 
     def _run_simulated_stream(self):
         seq = 0
@@ -441,6 +448,8 @@ class OpenIMUDashboard(QtWidgets.QMainWindow):
             by = take(self.receiver.by_buf)
             bz = take(self.receiver.bz_buf)
             fps = self.receiver.fps
+            odr = self.receiver.odr
+            backlog = self.receiver.backlog
             dropped = self.receiver.dropped_frames
             temp_c = self.receiver.temp_c
             acc_norm = self.receiver.acc_norm_g
@@ -461,7 +470,8 @@ class OpenIMUDashboard(QtWidgets.QMainWindow):
         # low ODR / uneven scrolling after the receiver was decoupled.
         self.header.setText(
             f"Roll:{r[-1]:+7.2f} deg | Pitch:{p[-1]:+7.2f} deg | Yaw:{y[-1]:+7.2f} deg  ||  "
-            f"|a|:{acc_norm:4.2f}g | Temp:{temp_c:4.1f} C | ODR:{fps:5.0f}Hz | Dropped:{dropped}"
+            f"|a|:{acc_norm:4.2f}g | Temp:{temp_c:4.1f} C | ODR:{odr:5.0f}Hz | "
+            f"FPS:{fps:5.0f} | Backlog:{backlog} | Dropped:{dropped}"
         )
 
 
