@@ -442,10 +442,10 @@ class OpenIMUDashboard(QtWidgets.QMainWindow):
         self.c_by.setData(t_rel, by)
         self.c_bz.setData(t_rel, bz)
 
-        self.header.setStyleSheet(
-            "font-size: 14px; font-weight: bold; font-family: Consolas, monospace; "
-            "padding: 10px; background-color: #1e1e2e; color: #cdd6f4; border-radius: 6px;"
-        )
+        # NOTE: the stylesheet is set once in __init__. Calling setStyleSheet()
+        # every frame forces a full Qt style re-polish (several ms) which holds
+        # the GIL and starves the ESKF thread - that was the real cause of the
+        # low ODR / uneven scrolling after the receiver was decoupled.
         self.header.setText(
             f"Roll:{r[-1]:+7.2f} deg | Pitch:{p[-1]:+7.2f} deg | Yaw:{y[-1]:+7.2f} deg  ||  "
             f"|a|:{acc_norm:4.2f}g | Temp:{temp_c:4.1f} C | ODR:{fps:5.0f}Hz | Dropped:{dropped}"
