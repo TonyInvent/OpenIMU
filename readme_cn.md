@@ -365,6 +365,10 @@ python tools/ahrs_demo.py --simulate
 
 可选参数：`--mahony-kp`、`--mahony-ki`、`--madgwick-gain`、`--calib-seconds`、`--history`、`--log samples.csv`、`--f-clock`（PCAN 时钟，默认 80 MHz）。
 
+默认四个算法拿到的是**同一个已扣除标定偏置**的陀螺数据（启动窗口测到的偏置对所有人只扣一次）。
+加 `--raw-gyro` 则改为喂原始陀螺，此时只有 SixAxis 用内部标定偏置——这也正是各算法自身偏置处理
+能力（Mahony 的积分、EKF 的偏置状态、Madgwick 没有偏置状态）显现出来的时候。
+
 ---
 
 ## 9. 3D 打印外壳（FreeCAD）

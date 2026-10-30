@@ -377,6 +377,12 @@ demo estimates the gyro bias from that window and initialises all three filters.
 Options: `--mahony-kp`, `--mahony-ki`, `--madgwick-gain`, `--calib-seconds`,
 `--history`, `--log samples.csv`, `--f-clock` (PCAN clock, default 80 MHz).
 
+By default all four estimators get the same **bias-calibrated** gyro (the bias
+measured in the startup window is subtracted once, for everyone). `--raw-gyro`
+feeds the raw stream instead, in which case only SixAxis applies its internal
+calibration - that is also when each estimator's own bias handling shows up
+(Mahony's integral, EKF's bias state, Madgwick's lack of one).
+
 ---
 
 ## 9. 3D-Printed Enclosure (FreeCAD)

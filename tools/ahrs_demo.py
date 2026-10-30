@@ -464,6 +464,9 @@ def parse_args():
     p.add_argument("--mahony-kp", type=float, default=1.0)
     p.add_argument("--mahony-ki", type=float, default=0.3)
     p.add_argument("--madgwick-gain", type=float, default=0.033)
+    p.add_argument("--raw-gyro", action="store_true",
+                   help="feed the raw (uncalibrated) gyro to every filter "
+                        "(default: subtract the calibrated bias from all of them)")
     p.add_argument("--history", type=float, default=8.0,
                    help="seconds of history kept for the plots")
     p.add_argument("--log", default=None, help="write decoded samples to a CSV file")
@@ -521,8 +524,13 @@ def main():
         "ekf": AhrsEkf(),
         "sixaxis": SixAxis(),
     }
+    # Fair comparison: every estimator gets the same, bias-calibrated gyro. With
+    # --raw-gyro the raw stream is used and only SixAxis keeps the bias.
+    common_bias = np.zeros(3) if args.raw_gyro else bias
     for f in filters.values():
-        f.reset(accel0, bias)
+        f.reset(accel0, None if args.raw_gyro else bias)
+    print(f"gyro input: {'raw' if args.raw_gyro else 'calibrated bias removed'} "
+          f"(bias={np.round(np.degrees(common_bias), 4)} deg/s)")
 
     # ---- rolling history -------------------------------------------------
     maxlen = max(100, int(args.history * 1000))
@@ -553,7 +561,7 @@ def main():
                     dt = t - last_t
                     if 0.0 < dt < 0.1:
                         for f in filters.values():
-                            f.update(accel, gyro, dt)
+                            f.update(accel, gyro - common_bias, dt)
                         hist_t.append(t)
                         for name, f in filters.items():
                             hist_euler[name].append(quat_to_euler(f.q))
