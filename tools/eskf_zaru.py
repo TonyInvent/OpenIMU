@@ -114,16 +114,9 @@ class ZaruReceiver(OpenIMUReceiver):
             self.eskf.update_accel(acc_g)
             r, p, y = self.eskf.get_euler_deg()
             bg_deg = np.degrees(self.eskf.bg)
-            with self.lock:
-                self.t_buf.append(self.sim_time_sec)
-                self.roll_buf.append(r)
-                self.pitch_buf.append(p)
-                self.yaw_buf.append(y)
-                self.bx_buf.append(bg_deg[0])
-                self.by_buf.append(bg_deg[1])
-                self.bz_buf.append(bg_deg[2])
-                self.temp_c = temp_c
-                self.acc_norm_g = float(np.linalg.norm(acc_g))
+            self.hist.push(self.sim_time_sec, r, p, y, bg_deg[0], bg_deg[1], bg_deg[2])
+            self.temp_c = temp_c
+            self.acc_norm_g = float(np.linalg.norm(acc_g))
 
 
 # ---------------------------------------------------------------------------

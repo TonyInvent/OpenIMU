@@ -2,6 +2,7 @@ import sys
 import time
 import struct
 import argparse
+import gc
 import queue
 import threading
 from collections import deque
@@ -156,6 +157,46 @@ class ICM45686_ESKF:
 # =====================================================================
 # 2. CAN-FD Receiver Thread
 # =====================================================================
+class _History:
+    """Fixed-size numpy ring (7 columns), single writer.
+
+    Pushing is O(1) and lock-free; reading is a numpy slice, so the GUI never
+    holds a lock and never iterates 7 * 4200 Python objects - that was what
+    starved the ESKF thread and let the backlog grow to thousands of frames.
+    """
+
+    NCOLS = 7
+
+    def __init__(self, capacity):
+        self.cap = int(capacity)
+        self.data = np.zeros((self.cap, self.NCOLS), dtype=np.float64)
+        self.idx = 0
+        self.count = 0
+
+    def push(self, t, r, p, y, bx, by, bz):
+        i = self.idx
+        self.data[i] = (t, r, p, y, bx, by, bz)
+        self.idx = (i + 1) % self.cap
+        if self.count < self.cap:
+            self.count += 1
+
+    def snapshot(self, max_points=900):
+        """Return the 7 columns, oldest first, decimated to ~max_points."""
+        n = self.count
+        if n == 0:
+            return None
+        end = self.idx
+        start = (end - n) % self.cap
+        if start < end:
+            seg = self.data[start:end]
+        else:
+            seg = np.concatenate((self.data[start:], self.data[:end]))
+        if n > max_points:
+            step = max(1, n // max_points)
+            seg = seg[::step]
+        return [seg[:, k] for k in range(self.NCOLS)]
+
+
 class OpenIMUReceiver(threading.Thread):
     def __init__(self, eskf: ICM45686_ESKF, interface='pcan', channel='PCAN_USBBUS1',
                  f_clock_mhz=80, calib_sec=1.5, window_sec=5.0, simulate=False):
@@ -170,14 +211,14 @@ class OpenIMUReceiver(threading.Thread):
         self.running = True
         self.lock = threading.Lock()
 
+        # The receive queue can hold thousands of frames while the GUI catches
+        # up; a full GC pass would scan all of them and pause the consumer.
+        # Freeze the start-up objects and make the collections much rarer.
+        gc.freeze()
+        gc.set_threshold(50000, 2000, 2000)
+
         maxlen = int(window_sec * ODR_HZ) + 200
-        self.t_buf     = deque(maxlen=maxlen)
-        self.roll_buf  = deque(maxlen=maxlen)
-        self.pitch_buf = deque(maxlen=maxlen)
-        self.yaw_buf   = deque(maxlen=maxlen)
-        self.bx_buf    = deque(maxlen=maxlen)
-        self.by_buf    = deque(maxlen=maxlen)
-        self.bz_buf    = deque(maxlen=maxlen)
+        self.hist = _History(maxlen)
 
         self.sim_time_sec = 0.0
         self.last_seq = None
@@ -246,16 +287,9 @@ class OpenIMUReceiver(threading.Thread):
             r, p, y = self.eskf.get_euler_deg()
             bg_deg = np.degrees(self.eskf.bg)
 
-            with self.lock:
-                self.t_buf.append(self.sim_time_sec)
-                self.roll_buf.append(r)
-                self.pitch_buf.append(p)
-                self.yaw_buf.append(y)
-                self.bx_buf.append(bg_deg[0])
-                self.by_buf.append(bg_deg[1])
-                self.bz_buf.append(bg_deg[2])
-                self.temp_c = temp_c
-                self.acc_norm_g = float(np.linalg.norm(acc_g))
+            self.hist.push(self.sim_time_sec, r, p, y, bg_deg[0], bg_deg[1], bg_deg[2])
+            self.temp_c = temp_c
+            self.acc_norm_g = float(np.linalg.norm(acc_g))
 
     def run(self):
         self._calib_acc = []
@@ -427,32 +461,16 @@ class OpenIMUDashboard(QtWidgets.QMainWindow):
             self.header.setText(f"[Calibrating {pct:3d}%] Collecting 800Hz static samples for initial attitude & gyro bias...")
             return
 
-        with self.receiver.lock:
-            if not self.receiver.t_buf:
-                return
-            # Decimate while copying. Converting the full 5 s deques (4200
-            # samples x 7 buffers) costs ~2.5 ms per refresh and the plot then
-            # redraws 24k points; together that starves the ESKF thread and
-            # caps the ODR. islice + fromiter keeps ~900 points for ~0.3 ms.
-            n = len(self.receiver.t_buf)
-            step = max(1, n // 900)
-
-            def take(buf):
-                return np.fromiter(islice(buf, 0, None, step), dtype=np.float64)
-
-            t  = take(self.receiver.t_buf)
-            r  = take(self.receiver.roll_buf)
-            p  = take(self.receiver.pitch_buf)
-            y  = take(self.receiver.yaw_buf)
-            bx = take(self.receiver.bx_buf)
-            by = take(self.receiver.by_buf)
-            bz = take(self.receiver.bz_buf)
-            fps = self.receiver.fps
-            odr = self.receiver.odr
-            backlog = self.receiver.backlog
-            dropped = self.receiver.dropped_frames
-            temp_c = self.receiver.temp_c
-            acc_norm = self.receiver.acc_norm_g
+        snap = self.receiver.hist.snapshot(900)
+        if snap is None:
+            return
+        t, r, p, y, bx, by, bz = snap
+        fps = self.receiver.fps
+        odr = self.receiver.odr
+        backlog = self.receiver.backlog
+        dropped = self.receiver.dropped_frames
+        temp_c = self.receiver.temp_c
+        acc_norm = self.receiver.acc_norm_g
 
         t_rel = t - t[-1]
 
