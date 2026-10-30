@@ -2,6 +2,7 @@ import sys
 import time
 import struct
 import argparse
+import queue
 import threading
 from collections import deque
 import numpy as np
@@ -271,35 +272,26 @@ class OpenIMUReceiver(threading.Thread):
             self._run_simulated_stream()
             return
 
+        # Dedicated receive thread: it only does bus.recv() + decode + enqueue,
+        # so the PCAN driver queue is drained at full speed and a slow ESKF or
+        # GUI can never make the driver overflow and drop frames. The queue is
+        # unbounded on purpose - losing a single sample would bias the accuracy
+        # evaluation.
+        self._raw_q = queue.Queue()
+        recv_thread = threading.Thread(target=self._recv_loop, args=(bus,), daemon=True)
+        recv_thread.start()
+
         rate_t0 = time.perf_counter()
         rate_cnt = 0
 
         try:
             while self.running:
-                first_msg = bus.recv(timeout=0.005)
-                if first_msg is None:
+                try:
+                    seq, acc_g, gyro_rad, temp_c = self._raw_q.get(timeout=0.1)
+                except queue.Empty:
                     continue
-
-                batch = [first_msg]
-                while len(batch) < 128:
-                    m = bus.recv(timeout=0.0)
-                    if m is None:
-                        break
-                    batch.append(m)
-
-                if len(batch) > 80:
-                    batch = batch[-32:]
-
-                for msg in batch:
-                    if msg.arbitration_id != CAN_ID_IMU or len(msg.data) < FRAME_LEN:
-                        continue
-                    seq, ax, ay, az, gx, gy, gz, raw_temp = struct.unpack('>H7h', msg.data[:16])
-                    acc_g    = np.array([ax, ay, az], dtype=np.float64) / ACCEL_SCALE
-                    gyro_rad = np.radians(np.array([gx, gy, gz], dtype=np.float64) / GYRO_SCALE)
-                    temp_c   = raw_temp / TEMP_SCALE + TEMP_OFFSET
-
-                    self._process_raw_sample(seq, acc_g, gyro_rad, temp_c)
-                    rate_cnt += 1
+                self._process_raw_sample(seq, acc_g, gyro_rad, temp_c)
+                rate_cnt += 1
 
                 now = time.perf_counter()
                 if now - rate_t0 >= 0.5:
@@ -308,8 +300,24 @@ class OpenIMUReceiver(threading.Thread):
                     rate_cnt = 0
                     rate_t0 = now
         finally:
+            self.running = False
+            recv_thread.join(timeout=1.0)
             if bus is not None:
                 bus.shutdown()
+
+    def _recv_loop(self, bus):
+        """Drain the CAN driver queue into the queue; never drop a frame."""
+        while self.running:
+            msg = bus.recv(timeout=0.05)
+            if msg is None:
+                continue
+            if msg.arbitration_id != CAN_ID_IMU or len(msg.data) < FRAME_LEN:
+                continue
+            seq, ax, ay, az, gx, gy, gz, raw_temp = struct.unpack('>H7h', msg.data[:16])
+            acc_g = np.array([ax, ay, az], dtype=np.float64) / ACCEL_SCALE
+            gyro_rad = np.radians(np.array([gx, gy, gz], dtype=np.float64) / GYRO_SCALE)
+            temp_c = raw_temp / TEMP_SCALE + TEMP_OFFSET
+            self._raw_q.put((seq, acc_g, gyro_rad, temp_c))
 
     def _run_simulated_stream(self):
         seq = 0
