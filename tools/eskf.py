@@ -5,6 +5,7 @@ import argparse
 import queue
 import threading
 from collections import deque
+from itertools import islice
 import numpy as np
 import pyqtgraph as pg
 from PyQt6 import QtWidgets, QtCore
@@ -420,13 +421,23 @@ class OpenIMUDashboard(QtWidgets.QMainWindow):
         with self.receiver.lock:
             if not self.receiver.t_buf:
                 return
-            t  = np.array(self.receiver.t_buf)
-            r  = np.array(self.receiver.roll_buf)
-            p  = np.array(self.receiver.pitch_buf)
-            y  = np.array(self.receiver.yaw_buf)
-            bx = np.array(self.receiver.bx_buf)
-            by = np.array(self.receiver.by_buf)
-            bz = np.array(self.receiver.bz_buf)
+            # Decimate while copying. Converting the full 5 s deques (4200
+            # samples x 7 buffers) costs ~2.5 ms per refresh and the plot then
+            # redraws 24k points; together that starves the ESKF thread and
+            # caps the ODR. islice + fromiter keeps ~900 points for ~0.3 ms.
+            n = len(self.receiver.t_buf)
+            step = max(1, n // 900)
+
+            def take(buf):
+                return np.fromiter(islice(buf, 0, None, step), dtype=np.float64)
+
+            t  = take(self.receiver.t_buf)
+            r  = take(self.receiver.roll_buf)
+            p  = take(self.receiver.pitch_buf)
+            y  = take(self.receiver.yaw_buf)
+            bx = take(self.receiver.bx_buf)
+            by = take(self.receiver.by_buf)
+            bz = take(self.receiver.bz_buf)
             fps = self.receiver.fps
             dropped = self.receiver.dropped_frames
             temp_c = self.receiver.temp_c
