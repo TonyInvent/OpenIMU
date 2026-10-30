@@ -318,15 +318,19 @@ print(seq, [a / 8192.0 for a in acc], [g / 16.4 for g in gyr], tmp / 132.48 + 25
 
 ---
 
-## 8. Python 姿态解算 Demo（Mahony / Madgwick / SixAxis）
+## 8. Python 姿态解算 Demo（Mahony / Madgwick / EKF / SixAxis）
 
-`tools/ahrs_demo.py` 读取 16 字节 CAN FD 数据，并在同一份数据上运行三种姿态估计，实时对比：
+`tools/ahrs_demo.py` 读取 16 字节 CAN FD 数据，并在同一份数据上运行四种姿态估计，实时对比：
 
 | 算法 | 说明 |
 |---|---|
-| **Mahony** | 非线性互补滤波，比例 + 积分修正 |
-| **Madgwick** | 梯度下降 AHRS（`--madgwick-beta`） |
+| **Mahony** | `ahrs.filters.Mahony`——非线性互补滤波（P + I） |
+| **Madgwick** | `ahrs.filters.Madgwick`——梯度下降 AHRS |
+| **EKF** | `ahrs.filters.EKF`——四元数误差状态卡尔曼滤波 |
 | **SixAxis** | 移植自 BeijingDynamics `open_sprite_runtime` 的 `native/src/imu_six_axis.hpp`：比例修正 + 启动静态陀螺偏置 + 加速度计信任窗口（无磁力计） |
+
+Mahony / Madgwick / EKF 来自 [Mayitzin/ahrs](https://github.com/Mayitzin/ahrs)
+（纯 numpy 的 AHRS 工具箱）；SixAxis 是 BeijingDynamics 实现的原样移植。
 
 界面显示 3D 姿态、roll/pitch/yaw 对比，以及世界系下的线（运动）加速度。6 轴融合无法从
 加速度计观测 yaw，所以静置时 **yaw 曲线的斜率就是残余陀螺偏置**——底部 yaw 图和标题栏的
@@ -335,7 +339,7 @@ print(seq, [a / 8192.0 for a in acc], [g / 16.4 for g in gyr], tmp / 132.48 + 25
 ### 8.1 安装依赖
 
 ```bash
-pip install python-can numpy matplotlib
+pip install python-can numpy matplotlib ahrs
 ```
 
 ### 8.2 运行
@@ -359,7 +363,7 @@ python tools/ahrs_demo.py --simulate
 
 标定窗口（默认 `--calib-seconds 2` 秒）内请**保持板子静止**：demo 会在这段时间估计陀螺偏置，并初始化三个滤波器。
 
-可选参数：`--mahony-kp`、`--mahony-ki`、`--madgwick-beta`、`--calib-seconds`、`--history`、`--log samples.csv`、`--f-clock`（PCAN 时钟，默认 80 MHz）。
+可选参数：`--mahony-kp`、`--mahony-ki`、`--madgwick-gain`、`--calib-seconds`、`--history`、`--log samples.csv`、`--f-clock`（PCAN 时钟，默认 80 MHz）。
 
 ---
 

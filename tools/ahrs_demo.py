@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """
-open_imu AHRS demo: ICM-45686 (CAN FD, ID 0x01) -> Mahony / Madgwick / SixAxis.
+open_imu AHRS demo: ICM-45686 (CAN FD, ID 0x01) -> Mahony / Madgwick / EKF / SixAxis.
 
 Reads the 16-byte CAN FD stream produced by the STM32G431 firmware and runs
-three attitude estimators on the same samples, so they can be compared live:
+four attitude estimators on the same samples, so they can be compared live:
 
-  * Mahony    - nonlinear complementary filter (proportional + integral)
-  * Madgwick  - gradient-descent AHRS (beta gain, no integral)
-  * SixAxis   - BeijingDynamics open_sprite_runtime (native/src/imu_six_axis.hpp):
-                nonlinear complementary filter with a startup static gyro bias
-                and an accelerometer trust window (no magnetometer, no online
-                bias learning)
+  * Mahony    - ahrs.filters.Mahony    (nonlinear complementary filter, PI)
+  * Madgwick  - ahrs.filters.Madgwick  (gradient-descent AHRS)
+  * EKF       - ahrs.filters.EKF       (quaternion error-state Kalman filter)
+  * SixAxis   - BeijingDynamics open_sprite_runtime native/src/imu_six_axis.hpp
+                (proportional correction with a startup static gyro bias and an
+                accelerometer trust window, no magnetometer)
 
-Live view: 3-D body triads, roll/pitch comparison, and world-frame linear
+Live view: 3-D body axes, roll/pitch/yaw comparison, world-frame linear
 ("motion") acceleration.
 
 CAN backends (python-can):
-  Linux   : SocketCAN  (-i socketcan -c can0).  The interface must already be
-            configured for CAN FD, see README section 7:
-              sudo ip link set can0 type can bitrate 1000000 dbitrate 5000000 fd on
-  Windows : PCAN-Basic (-i pcan -c PCAN_USBBUS1) for a PCAN-USB FD adapter.
+  Linux   : SocketCAN   (-i socketcan -c can0), interface configured with
+            `sudo ip link set can0 type can bitrate 1000000 dbitrate 5000000 fd on`
+  Windows : PCAN-Basic  (-i pcan -c PCAN_USBBUS1) for a PCAN-USB FD adapter
 
-Requires: python-can, numpy, matplotlib.
+Requires: python-can, numpy, matplotlib, ahrs
+    pip install python-can numpy matplotlib ahrs
 """
 
 from __future__ import annotations
@@ -40,6 +40,11 @@ try:
 except ImportError:  # pragma: no cover
     sys.exit("python-can is required:  pip install python-can")
 
+try:
+    from ahrs.filters import EKF, Madgwick, Mahony
+except ImportError:  # pragma: no cover
+    sys.exit("ahrs is required:  pip install ahrs")
+
 # ---------------------------------------------------------------------------
 # Frame / sensor constants (must match the firmware)
 # ---------------------------------------------------------------------------
@@ -50,8 +55,14 @@ GYRO_LSB_PER_DPS = 16.4      # +/-2000 dps
 DEG = math.pi / 180.0
 RAD2DEG = 180.0 / math.pi
 
-FILTER_NAMES = ("mahony", "madgwick", "sixaxis")
-FILTER_COLORS = {"mahony": "#d62728", "madgwick": "#2ca02c", "sixaxis": "#1f77b4"}
+FILTER_NAMES = ("mahony", "madgwick", "ekf", "sixaxis")
+FILTER_COLORS = {
+    "mahony": "#d62728",
+    "madgwick": "#2ca02c",
+    "ekf": "#9467bd",
+    "sixaxis": "#1f77b4",
+}
+NOMINAL_RATE = 800.0
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +117,6 @@ def quat_from_accel(a: np.ndarray) -> np.ndarray:
 
 
 def quat_integrate(q: np.ndarray, omega: np.ndarray, dt: float) -> np.ndarray:
-    """First-order quaternion integration over one step."""
     speed = float(np.linalg.norm(omega))
     half = 0.5 * speed * dt
     scale = math.sin(half) / speed if speed > 1e-12 else 0.5 * dt
@@ -123,7 +133,6 @@ def quat_integrate(q: np.ndarray, omega: np.ndarray, dt: float) -> np.ndarray:
 
 
 def quat_angle_deg(q1: np.ndarray, q2: np.ndarray) -> float:
-    """Angle between two orientations, in degrees."""
     d = min(1.0, abs(float(np.dot(q1, q2))))
     return 2.0 * math.acos(d) * RAD2DEG
 
@@ -131,73 +140,54 @@ def quat_angle_deg(q1: np.ndarray, q2: np.ndarray) -> float:
 # ---------------------------------------------------------------------------
 # Attitude estimators
 # ---------------------------------------------------------------------------
-class Mahony:
+class AhrsMahony:
+    """Wrapper around ahrs.filters.Mahony (online IMU update)."""
+
     name = "mahony"
 
-    def __init__(self, kp=1.0, ki=0.05):
-        self.kp = kp
-        self.ki = ki
+    def __init__(self, kp=1.0, ki=0.3):
+        self.f = Mahony(frequency=NOMINAL_RATE, k_P=kp, k_I=ki)
         self.q = np.array([1.0, 0.0, 0.0, 0.0])
-        self.bias = np.zeros(3)
-        self.integral = np.zeros(3)
 
-    def reset(self, accel, bias):
+    def reset(self, accel, bias=None):
         self.q = quat_from_accel(accel)
-        self.bias = np.array(bias, dtype=float)
-        self.integral = np.zeros(3)
 
     def update(self, accel, gyro, dt):
-        omega = gyro - self.bias
-        mag = float(np.linalg.norm(accel))
-        if mag > 1e-6:
-            measured = accel / mag
-            up = quat_to_rot(self.q).T @ np.array([0.0, 0.0, 1.0])
-            err = np.cross(measured, up)
-            self.integral += err * dt
-            omega = omega + self.kp * err + self.ki * self.integral
-        self.q = quat_integrate(self.q, omega, dt)
+        self.q = self.f.updateIMU(self.q, gyro, accel, dt)
         return self.q
 
 
-class Madgwick:
+class AhrsMadgwick:
+    """Wrapper around ahrs.filters.Madgwick (online IMU update)."""
+
     name = "madgwick"
 
-    def __init__(self, beta=0.1):
-        self.beta = beta
+    def __init__(self, gain=0.033):
+        self.f = Madgwick(frequency=NOMINAL_RATE, gain_imu=gain)
         self.q = np.array([1.0, 0.0, 0.0, 0.0])
-        self.bias = np.zeros(3)
 
-    def reset(self, accel, bias):
+    def reset(self, accel, bias=None):
         self.q = quat_from_accel(accel)
-        self.bias = np.array(bias, dtype=float)
 
     def update(self, accel, gyro, dt):
-        w, x, y, z = self.q
-        gx, gy, gz = gyro - self.bias
-        ax, ay, az = accel
-        mag = math.sqrt(ax * ax + ay * ay + az * az)
-        if mag > 1e-9:
-            ax, ay, az = ax / mag, ay / mag, az / mag
-            # Objective function f(q) = predicted up - measured up
-            f0 = 2 * (x * z - w * y) - ax
-            f1 = 2 * (w * x + y * z) - ay
-            f2 = 2 * (0.5 - x * x - y * y) - az
-            # J^T f
-            g0 = -2 * y * f0 + 2 * x * f1
-            g1 = 2 * z * f0 + 2 * w * f1 - 4 * x * f2
-            g2 = -2 * w * f0 + 2 * z * f1 - 4 * y * f2
-            g3 = 2 * x * f0 + 2 * y * f1
-            gn = math.sqrt(g0 * g0 + g1 * g1 + g2 * g2 + g3 * g3)
-            if gn > 1e-9:
-                g0, g1, g2, g3 = g0 / gn, g1 / gn, g2 / gn, g3 / gn
-                qd0 = 0.5 * (-x * gx - y * gy - z * gz) - self.beta * g0
-                qd1 = 0.5 * (w * gx + y * gz - z * gy) - self.beta * g1
-                qd2 = 0.5 * (w * gy - x * gz + z * gx) - self.beta * g2
-                qd3 = 0.5 * (w * gz + x * gy - y * gx) - self.beta * g3
-                nq = np.array([w + qd0 * dt, x + qd1 * dt, y + qd2 * dt, z + qd3 * dt])
-                n = float(np.linalg.norm(nq))
-                if n > 1e-12:
-                    self.q = nq / n
+        self.q = self.f.updateIMU(self.q, gyro, accel, dt)
+        return self.q
+
+
+class AhrsEkf:
+    """Wrapper around ahrs.filters.EKF (quaternion EKF, online update)."""
+
+    name = "ekf"
+
+    def __init__(self):
+        self.f = EKF(frequency=NOMINAL_RATE)
+        self.q = np.array([1.0, 0.0, 0.0, 0.0])
+
+    def reset(self, accel, bias=None):
+        self.q = quat_from_accel(accel)
+
+    def update(self, accel, gyro, dt):
+        self.q = self.f.update(self.q, gyro, accel, dt=dt)
         return self.q
 
 
@@ -211,13 +201,13 @@ class SixAxis:
         self.bias = np.zeros(3)
         self.trust = 0.0
 
-    def reset(self, accel, bias):
+    def reset(self, accel, bias=None):
         roll = math.atan2(accel[1], accel[2])
         pitch = math.atan2(-accel[0], math.hypot(accel[1], accel[2]))
         cr, sr = math.cos(roll / 2), math.sin(roll / 2)
         cp, sp = math.cos(pitch / 2), math.sin(pitch / 2)
         self.q = np.array([cr * cp, sr * cp, cr * sp, -sr * sp])
-        self.bias = np.array(bias, dtype=float)
+        self.bias = np.array(bias if bias is not None else np.zeros(3), dtype=float)
         self.trust = 0.0
 
     def _up(self) -> np.ndarray:
@@ -227,21 +217,19 @@ class SixAxis:
     def update(self, accel, gyro, dt):
         omega = gyro - self.bias
         mag = float(np.linalg.norm(accel))
-        # Trust the accelerometer only when |a| is close to 1 g.
         self.trust = min(1.0, max(0.0, (0.25 - abs(mag / GRAVITY - 1.0)) / 0.20))
         if self.trust > 0.0 and mag > 1e-9:
             measured = accel / mag
-            err = np.cross(measured, self._up())
-            omega = omega + self.trust * err
+            omega = omega + self.trust * np.cross(measured, self._up())
         self.q = quat_integrate(self.q, omega, dt)
         return self.q
 
 
 # ---------------------------------------------------------------------------
-# CAN reading
+# CAN / synthetic sources
 # ---------------------------------------------------------------------------
 class CanReader(threading.Thread):
-    """Background reader: pushes (t, accel, gyro, temp) into a deque."""
+    """Background reader: pushes (t, seq, accel, gyro, temp) into a deque."""
 
     def __init__(self, bus, maxlen=20000, log_path=None):
         super().__init__(daemon=True)
@@ -270,9 +258,8 @@ class CanReader(threading.Thread):
                 if self._log is not None:
                     self._log.write(
                         f"{t:.6f},{seq},{accel[0]:.4f},{accel[1]:.4f},{accel[2]:.4f},"
-                        f"{gyro[0]:.5f},{gyro[1]:.5f},{gyro[2]:.5f},{temp:.2f}\n"
-                    )
-        except Exception as exc:  # keep the message for the main thread
+                        f"{gyro[0]:.5f},{gyro[1]:.5f},{gyro[2]:.5f},{temp:.2f}\n")
+        except Exception as exc:
             self.error = exc
         finally:
             if self._log is not None:
@@ -294,17 +281,21 @@ class SimReader(threading.Thread):
         self.static_until = time.perf_counter() + static_seconds
 
     def run(self):
-        dt = 1.0 / 800.0
         q = np.array([1.0, 0.0, 0.0, 0.0])
         tumble = np.array([0.25, 0.12, 0.30])   # rad/s
+        last = time.perf_counter()
         while self.running:
-            t0 = time.perf_counter()
-            omega = np.zeros(3) if t0 < self.static_until else tumble
+            now = time.perf_counter()
+            dt = now - last
+            last = now
+            if dt <= 0.0 or dt > 0.05:
+                dt = 1.0 / 800.0
+            omega = np.zeros(3) if now < self.static_until else tumble
             q = quat_integrate(q, omega, dt)
             accel = quat_to_rot(q).T @ np.array([0.0, 0.0, GRAVITY])
             self.seq += 1
-            self.samples.append((t0, self.seq, accel, omega.copy(), 25.0))
-            time.sleep(dt)
+            self.samples.append((now, self.seq, accel, omega.copy(), 25.0))
+            time.sleep(1.0 / 800.0)
 
     def stop(self):
         self.running = False
@@ -352,7 +343,7 @@ class LivePlot:
         self.ax_pitch = self.fig.add_subplot(gs[1, 1])
         self.ax_yaw = self.fig.add_subplot(gs[2, :])
 
-        # 3-D attitude: world triad (grey) + body Z/X per filter.
+        # 3-D attitude: world triad (grey) + body frame per filter.
         self.ax3d.set_xlim(-1, 1)
         self.ax3d.set_ylim(-1, 1)
         self.ax3d.set_zlim(-1, 1)
@@ -366,10 +357,10 @@ class LivePlot:
         self.body_lines = {}
         for name in FILTER_NAMES:
             color = FILTER_COLORS[name]
-            lz, = self.ax3d.plot([], [], [], color=color, lw=2.5, label=name)
-            lx, = self.ax3d.plot([], [], [], color=color, lw=1.0, alpha=0.5)
+            lz, = self.ax3d.plot([], [], [], color=color, lw=2.2, label=name)
+            lx, = self.ax3d.plot([], [], [], color=color, lw=0.9, alpha=0.45)
             self.body_lines[name] = (lz, lx)
-        self.ax3d.legend(loc="upper right", fontsize=7)
+        self.ax3d.legend(loc="upper right", fontsize=6.5)
 
         # Linear acceleration.
         self.ax_acc.set_title("linear acceleration (world)")
@@ -382,7 +373,7 @@ class LivePlot:
             self.acc_lines.append(ln)
         self.ax_acc.legend(loc="upper right", fontsize=7)
 
-        # Roll / pitch comparison.
+        # Roll / pitch / yaw comparison.
         for ax, title in ((self.ax_roll, "roll [deg]"), (self.ax_pitch, "pitch [deg]")):
             ax.set_title(title)
             ax.grid(True, alpha=0.3)
@@ -392,8 +383,6 @@ class LivePlot:
                                                   label=n)[0] for n in FILTER_NAMES}
         self.ax_roll.legend(loc="upper right", fontsize=7)
 
-        # Yaw is unobservable from the accelerometer, so on a static board its
-        # slope is exactly the residual gyro bias - this is the drift to watch.
         self.ax_yaw.set_title("yaw [deg] (unwrapped; slope = gyro drift)")
         self.ax_yaw.set_xlabel("time [s]")
         self.ax_yaw.set_ylabel("deg")
@@ -433,7 +422,6 @@ class LivePlot:
             ax.relim()
             ax.autoscale_view()
 
-        # Static-board yaw drift rate over the last ~2 s of history.
         yaw_rate = 0.0
         if yaw_unwrapped6 is not None and len(t) > 20:
             n2 = min(len(t), 1600)
@@ -441,13 +429,12 @@ class LivePlot:
             if span > 0.5:
                 yaw_rate = (yaw_unwrapped6[-1] - yaw_unwrapped6[-n2]) / span
 
-        ang_mh = quat_angle_deg(filters["mahony"].q, filters["sixaxis"].q)
-        ang_mg = quat_angle_deg(filters["madgwick"].q, filters["sixaxis"].q)
-        bias_z = math.degrees(filters["sixaxis"].bias[2])
+        ref = filters["sixaxis"].q
+        dqs = " / ".join(f"{quat_angle_deg(filters[n].q, ref):.1f}"
+                         for n in ("mahony", "madgwick", "ekf"))
         self.fig.suptitle(
             f"seq {seq} | {rate:.0f} Hz | yaw {yaw6:+.2f} deg ({yaw_rate:+.3f} deg/s)"
-            f" | gyro bias Z {bias_z:+.4f} deg/s | trust {filters['sixaxis'].trust:.2f}"
-            f" | dq(SixAxis vs Mahony/Madgwick) {ang_mh:.2f}/{ang_mg:.2f} deg",
+            f" | dq vs SixAxis (Mahony/Madgwick/EKF): {dqs} deg",
             fontsize=9,
         )
         self.fig.canvas.draw_idle()
@@ -462,7 +449,7 @@ class LivePlot:
 # ---------------------------------------------------------------------------
 def parse_args():
     p = argparse.ArgumentParser(
-        description="ICM-45686 CAN FD demo: Mahony / Madgwick / SixAxis comparison",
+        description="ICM-45686 CAN FD demo: Mahony / Madgwick / EKF / SixAxis comparison",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("-i", "--interface", default="auto",
@@ -475,8 +462,8 @@ def parse_args():
     p.add_argument("--calib-seconds", type=float, default=2.0,
                    help="static window used to estimate the gyro bias")
     p.add_argument("--mahony-kp", type=float, default=1.0)
-    p.add_argument("--mahony-ki", type=float, default=0.05)
-    p.add_argument("--madgwick-beta", type=float, default=0.1)
+    p.add_argument("--mahony-ki", type=float, default=0.3)
+    p.add_argument("--madgwick-gain", type=float, default=0.033)
     p.add_argument("--history", type=float, default=8.0,
                    help="seconds of history kept for the plots")
     p.add_argument("--log", default=None, help="write decoded samples to a CSV file")
@@ -529,8 +516,9 @@ def main():
         print("WARNING: the board was not still during calibration; the bias may be off")
 
     filters = {
-        "mahony": Mahony(args.mahony_kp, args.mahony_ki),
-        "madgwick": Madgwick(args.madgwick_beta),
+        "mahony": AhrsMahony(args.mahony_kp, args.mahony_ki),
+        "madgwick": AhrsMadgwick(args.madgwick_gain),
+        "ekf": AhrsEkf(),
         "sixaxis": SixAxis(),
     }
     for f in filters.values():
@@ -569,8 +557,6 @@ def main():
                         hist_t.append(t)
                         for name, f in filters.items():
                             hist_euler[name].append(quat_to_euler(f.q))
-                        # Motion acceleration in the world frame:
-                        # a_world = R * (specific force) + gravity
                         rot = quat_to_rot(filters["sixaxis"].q)
                         a_world = rot @ accel + np.array([0.0, 0.0, -GRAVITY])
                         hist_acc["ax"].append(a_world[0])
@@ -592,19 +578,14 @@ def main():
                     last_redraw = now
                     if not plot.alive():
                         running = False
-                # Console yaw readout (easy to watch while aligning the board).
-                if now - last_print > 0.25:
-                    r, p, y = np.degrees(quat_to_euler(filters["sixaxis"].q))
-                    print(f"yaw {y:+8.2f} deg   (roll {r:+7.2f}, pitch {p:+7.2f})")
-                    last_print = now
             elif now - last_print > 0.2:
                 e = {n: np.degrees(np.asarray(hist_euler[n][-1])) if hist_euler[n] else (0, 0, 0)
                      for n in FILTER_NAMES}
                 print(f"seq {last_seq} {rate:5.0f} Hz | "
                       f"r/p/y {e['sixaxis'][0]:7.2f}/{e['sixaxis'][1]:7.2f}/{e['sixaxis'][2]:+8.2f} | "
-                      f"Mahony {e['mahony'][0]:7.2f}/{e['mahony'][1]:7.2f}/{e['mahony'][2]:+8.2f} | "
-                      f"Madgwick {e['madgwick'][0]:7.2f}/{e['madgwick'][1]:7.2f}/{e['madgwick'][2]:+8.2f} | "
-                      f"|a| {hist_acc['mag'][-1] if hist_acc['mag'] else 0:5.2f} m/s^2")
+                      f"mahony {e['mahony'][0]:7.2f}/{e['mahony'][1]:7.2f}/{e['mahony'][2]:+8.2f} | "
+                      f"madgwick {e['madgwick'][0]:7.2f}/{e['madgwick'][1]:7.2f}/{e['madgwick'][2]:+8.2f} | "
+                      f"ekf {e['ekf'][0]:7.2f}/{e['ekf'][1]:7.2f}/{e['ekf'][2]:+8.2f}")
                 last_print = now
             else:
                 time.sleep(0.002)

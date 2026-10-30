@@ -326,16 +326,20 @@ print(seq, [a / 8192.0 for a in acc], [g / 16.4 for g in gyr], tmp / 132.48 + 25
 
 ---
 
-## 8. Python AHRS Demo (Mahony / Madgwick / SixAxis)
+## 8. Python AHRS Demo (Mahony / Madgwick / EKF / SixAxis)
 
-`tools/ahrs_demo.py` reads the 16-byte CAN FD stream and runs three attitude
+`tools/ahrs_demo.py` reads the 16-byte CAN FD stream and runs four attitude
 estimators on the same data, so they can be compared live:
 
 | Estimator | Notes |
 |---|---|
-| **Mahony** | nonlinear complementary filter, proportional + integral correction |
-| **Madgwick** | gradient-descent AHRS (`--madgwick-beta`) |
+| **Mahony** | `ahrs.filters.Mahony` - nonlinear complementary filter (P + I) |
+| **Madgwick** | `ahrs.filters.Madgwick` - gradient-descent AHRS |
+| **EKF** | `ahrs.filters.EKF` - quaternion error-state Kalman filter |
 | **SixAxis** | port of BeijingDynamics `open_sprite_runtime` `native/src/imu_six_axis.hpp`: proportional correction with a startup static gyro bias and an accelerometer trust window (no magnetometer) |
+
+Mahony, Madgwick and EKF come from [Mayitzin/ahrs](https://github.com/Mayitzin/ahrs),
+a numpy-only AHRS toolbox; SixAxis is a direct port of the BeijingDynamics one.
 
 It shows a 3-D attitude view, the roll/pitch/yaw comparison and the world-frame
 linear ("motion") acceleration. Yaw cannot be observed from the accelerometer,
@@ -345,7 +349,7 @@ bottom yaw plot (and the `yaw ... (deg/s)` readout) to assess static drift.
 ### 8.1 Install
 
 ```bash
-pip install python-can numpy matplotlib
+pip install python-can numpy matplotlib ahrs
 ```
 
 ### 8.2 Run
@@ -370,7 +374,7 @@ python tools/ahrs_demo.py --simulate
 Keep the board **still during the first `--calib-seconds`** (default 2 s): the
 demo estimates the gyro bias from that window and initialises all three filters.
 
-Options: `--mahony-kp`, `--mahony-ki`, `--madgwick-beta`, `--calib-seconds`,
+Options: `--mahony-kp`, `--mahony-ki`, `--madgwick-gain`, `--calib-seconds`,
 `--history`, `--log samples.csv`, `--f-clock` (PCAN clock, default 80 MHz).
 
 ---
