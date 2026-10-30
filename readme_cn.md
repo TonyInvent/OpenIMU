@@ -397,6 +397,13 @@ python tools/eskf_zaru.py -i pcan -c PCAN_USBBUS1
 python tools/eskf_zaru.py -i pcan -c PCAN_USBBUS1 --zaru-tau 0   # 关闭 ZARU 对比
 ```
 
+`tools/eskf_zaru5.py` 是 5 状态版本：X/Y 零偏进卡尔曼状态（通过重力连续可观），
+只有 Z 零偏交给 ZARU，动态与静止两种工况都覆盖：
+
+```bash
+python tools/eskf_zaru5.py -i pcan -c PCAN_USBBUS1
+```
+
 为什么不用更多状态：6 轴 IMU 只有 roll/pitch 可观（通过重力方向）。yaw 及其
 陀螺零偏不可观，把它们放进状态只会让它们和姿态互相"解释"，反而把姿态带坏。
 18 状态导航 ESKF 只适合有外部位置/速度源（轮速、GNSS、VIO）的系统。

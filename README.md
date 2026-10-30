@@ -416,6 +416,14 @@ python tools/eskf_zaru.py -i pcan -c PCAN_USBBUS1
 python tools/eskf_zaru.py -i pcan -c PCAN_USBBUS1 --zaru-tau 0   # ZARU off
 ```
 
+A 5-state variant, `tools/eskf_zaru5.py`, also keeps the X/Y gyro bias in the
+Kalman state (continuously observable through gravity) and routes only the Z
+bias through ZARU, so it covers both dynamic and standstill operation:
+
+```bash
+python tools/eskf_zaru5.py -i pcan -c PCAN_USBBUS1
+```
+
 Why not more states: on a 6-axis IMU only roll/pitch are observable (through
 the gravity direction). Yaw - and its gyro bias - are not observable, so making
 them filter states only lets them trade against the attitude and corrupt it.
