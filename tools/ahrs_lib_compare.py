@@ -227,17 +227,150 @@ class SixAxis:
 
 
 # ---------------------------------------------------------------------------
-# CAN / synthetic sources
+# Shared history: written by the acquisition thread, read by the display thread
 # ---------------------------------------------------------------------------
-class CanReader(threading.Thread):
-    """Background reader: pushes (t, seq, accel, gyro, temp) into a deque."""
+class SharedHistory:
+    """Fixed-size numpy ring buffer, lock-free in practice.
 
-    def __init__(self, bus, maxlen=20000, log_path=None):
+    The acquisition thread pushes one entry per IMU frame; the display thread
+    only ever reads a snapshot. ``idx``/``count`` are plain ints (atomic under
+    the GIL); a sample torn at the write boundary only shows up as one slightly
+    wrong point in the plot, never as a stall.
+    """
+
+    def __init__(self, capacity, names):
+        self.cap = int(capacity)
+        self.t = np.zeros(self.cap)
+        self.euler = {n: np.zeros((self.cap, 3)) for n in names}
+        self.acc = np.zeros((self.cap, 4))
+        self.idx = 0
+        self.count = 0
+        self.seq = 0
+
+    def push(self, t, euler, acc):
+        i = self.idx
+        self.t[i] = t
+        for n, e in euler.items():
+            self.euler[n][i] = e
+        self.acc[i] = acc
+        i += 1
+        self.idx = i % self.cap
+        if self.count < self.cap:
+            self.count += 1
+        self.seq += 1
+
+    def snapshot(self):
+        """Samples currently in the ring, oldest first (seqlock read)."""
+        data = None
+        for _ in range(4):
+            s0 = self.seq
+            n = self.count
+            if n == 0:
+                return None
+            end = self.idx
+            start = (end - n) % self.cap
+            if start < end:
+                sel = np.arange(start, end)
+            else:
+                sel = np.concatenate((np.arange(start, self.cap), np.arange(0, end)))
+            data = (self.t[sel],
+                    {k: v[sel] for k, v in self.euler.items()},
+                    {k: self.acc[sel, i] for i, k in enumerate(("ax", "ay", "az", "mag"))})
+            if self.seq == s0:
+                return data
+        return data
+
+
+# ---------------------------------------------------------------------------
+# Acquisition + algorithm thread (never blocked by the display)
+# ---------------------------------------------------------------------------
+class _AlgoSource(threading.Thread):
+    """Runs the static calibration and the four filters at full rate.
+
+    Everything the display needs is published through ``history`` and the
+    filters' current quaternions, so rendering cannot stall acquisition.
+    """
+
+    def __init__(self, calib_seconds, capacity, raw_gyro=False,
+                 mahony_kp=1.0, mahony_ki=0.3, madgwick_gain=0.033):
         super().__init__(daemon=True)
-        self.bus = bus
-        self.samples = deque(maxlen=maxlen)
+        self.calib_seconds = float(calib_seconds)
+        self.raw_gyro = bool(raw_gyro)
+        self.history = SharedHistory(capacity, FILTER_NAMES)
         self.running = True
         self.error = None
+        self.filters = None
+        self.bias = np.zeros(3)
+        self.accel0 = np.zeros(3)
+        self.calib_count = 0
+        self.last_seq = 0
+        self.last_temp = 0.0
+        self.ready = threading.Event()
+        self._mahony_kp = mahony_kp
+        self._mahony_ki = mahony_ki
+        self._madgwick_gain = madgwick_gain
+        self._calib = []
+        self._t0 = None
+        self._prev_t = None
+
+    # -- calibration -----------------------------------------------------
+    def _finish_calibration(self):
+        accels = np.asarray([c[2] for c in self._calib])
+        gyros = np.asarray([c[3] for c in self._calib])
+        self.bias = gyros.mean(axis=0)
+        self.accel0 = accels.mean(axis=0)
+        self.calib_count = len(self._calib)
+        self.filters = {
+            "mahony": AhrsMahony(self._mahony_kp, self._mahony_ki),
+            "madgwick": AhrsMadgwick(self._madgwick_gain),
+            "ekf": AhrsEkf(),
+            "sixaxis": SixAxis(),
+        }
+        for f in self.filters.values():
+            # SixAxis keeps the calibrated bias only when the raw gyro is fed.
+            f.reset(self.accel0, self.bias if self.raw_gyro else None)
+        self._calib = []
+        self._prev_t = None
+        self.ready.set()
+
+    # -- one IMU frame ---------------------------------------------------
+    def _handle(self, t, seq, accel, gyro, temp):
+        self.last_seq, self.last_temp = seq, temp
+        if self.filters is None:
+            if self._t0 is None:
+                self._t0 = t
+            self._calib.append((t, seq, accel, gyro, temp))
+            if t - self._t0 >= self.calib_seconds:
+                self._finish_calibration()
+            return
+
+        if self._prev_t is not None:
+            dt = t - self._prev_t
+            if 0.0 < dt < 0.1:
+                gyro_in = gyro if self.raw_gyro else gyro - self.bias
+                euler = {}
+                for name, f in self.filters.items():
+                    f.update(accel, gyro_in, dt)
+                    euler[name] = np.array(quat_to_euler(f.q))
+                rot = quat_to_rot(self.filters["sixaxis"].q)
+                a_world = rot @ accel + np.array([0.0, 0.0, -GRAVITY])
+                acc = np.array([a_world[0], a_world[1], a_world[2],
+                                float(np.linalg.norm(a_world))])
+                self.history.push(t, euler, acc)
+        self._prev_t = t
+
+    def stop(self):
+        self.running = False
+
+
+class CanReader(_AlgoSource):
+    """CAN FD source: decodes ID 0x01 frames and feeds the algorithm thread."""
+
+    def __init__(self, bus, calib_seconds, capacity, raw_gyro=False,
+                 mahony_kp=1.0, mahony_ki=0.3, madgwick_gain=0.033, log_path=None):
+        super().__init__(calib_seconds, capacity, raw_gyro,
+                         mahony_kp, mahony_ki, madgwick_gain)
+        self.bus = bus
         self.log_path = log_path
         self._log = None
 
@@ -255,7 +388,7 @@ class CanReader(threading.Thread):
                     continue
                 t = time.perf_counter()
                 seq, accel, gyro, temp = decode_frame(data)
-                self.samples.append((t, seq, accel, gyro, temp))
+                self._handle(t, seq, accel, gyro, temp)
                 if self._log is not None:
                     self._log.write(
                         f"{t:.6f},{seq},{accel[0]:.4f},{accel[1]:.4f},{accel[2]:.4f},"
@@ -266,20 +399,16 @@ class CanReader(threading.Thread):
             if self._log is not None:
                 self._log.close()
 
-    def stop(self):
-        self.running = False
 
-
-class SimReader(threading.Thread):
+class SimReader(_AlgoSource):
     """Synthetic 800 Hz source: static during calibration, then a slow tumble."""
 
-    def __init__(self, static_seconds=2.0, maxlen=20000):
-        super().__init__(daemon=True)
-        self.samples = deque(maxlen=maxlen)
-        self.running = True
-        self.error = None
+    def __init__(self, calib_seconds, capacity, raw_gyro=False,
+                 mahony_kp=1.0, mahony_ki=0.3, madgwick_gain=0.033):
+        super().__init__(calib_seconds, capacity, raw_gyro,
+                         mahony_kp, mahony_ki, madgwick_gain)
         self.seq = 0
-        self.static_until = time.perf_counter() + static_seconds
+        self.static_until = time.perf_counter() + calib_seconds
 
     def run(self):
         q = np.array([1.0, 0.0, 0.0, 0.0])
@@ -292,15 +421,12 @@ class SimReader(threading.Thread):
             last = now
             if dt <= 0.0 or dt > 0.05:
                 dt = 1.0 / 800.0
-            omega = np.zeros(3) if now < self.static_until else tumble
+            omega = np.zeros(3) if self.filters is None else tumble
             q = quat_integrate(q, omega, dt)
             accel = quat_to_rot(q).T @ np.array([0.0, 0.0, GRAVITY])
             self.seq += 1
-            self.samples.append((now, self.seq, accel, omega + bias, 25.0))
+            self._handle(now, self.seq, accel, omega + bias, 25.0)
             time.sleep(1.0 / 800.0)
-
-    def stop(self):
-        self.running = False
 
 
 def open_bus(args):
@@ -331,11 +457,13 @@ def open_bus(args):
 # Live plotting
 # ---------------------------------------------------------------------------
 class LivePlot:
-    def __init__(self):
+    def __init__(self, window=3.0):
         import matplotlib.pyplot as plt
         from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
         self.plt = plt
+        self.window = float(window)
+        self.max_points = 900          # ~1 point per pixel of the plot width
         plt.ion()
         self.fig = plt.figure("open_imu AHRS comparison (ahrs lib)", figsize=(12, 9))
         gs = self.fig.add_gridspec(3, 2, height_ratios=[1.25, 1.0, 1.0])
@@ -393,11 +521,35 @@ class LivePlot:
                                               label=n)[0] for n in FILTER_NAMES}
         self.ax_yaw.legend(loc="upper left", fontsize=7)
 
-    def update(self, hist_t, hist_euler, hist_acc, filters, seq, rate, temp):
-        t = np.asarray(hist_t)
-        if len(t) == 0:
+        # Draw once now: otherwise the window stays white until the first data
+        # frame arrives and it looks like the app has frozen.
+        self.fig.suptitle("calibrating ... (keep the board still)", fontsize=9)
+        try:
+            self.fig.canvas.draw()
+        except Exception:
+            pass
+
+    def update(self, snap, filters, seq, rate, temp):
+        if snap is None:
             return
-        t = t - t[0]
+        t, euler_hist, acc_hist = snap
+        n = len(t)
+        if n < 2:
+            return
+        # Decimate to ~1 point/pixel: a 3 s window at 800 Hz is far more detail
+        # than the screen can show, and it dominates the redraw cost.
+        if n > self.max_points:
+            idx = np.linspace(0, n - 1, self.max_points).astype(np.intp)
+            t_plot = t[idx]
+        else:
+            idx = None
+            t_plot = t
+
+        def decimate(y):
+            return y[idx] if idx is not None else y
+
+        # Fixed sliding window: newest sample at `window`, older samples left.
+        t_plot = (t_plot - t[-1]) + self.window
 
         for name, f in filters.items():
             rot = quat_to_rot(f.q)
@@ -405,35 +557,48 @@ class LivePlot:
             lz.set_data_3d([0, rot[0, 2]], [0, rot[1, 2]], [0, rot[2, 2]])
             lx.set_data_3d([0, rot[0, 0]], [0, rot[1, 0]], [0, rot[2, 0]])
 
-        for i, key in enumerate(("ax", "ay", "az", "mag")):
-            self.acc_lines[i].set_data(t, np.asarray(hist_acc[key]))
+        acc_series = [decimate(acc_hist[k]) for k in ("ax", "ay", "az", "mag")]
+        for i in range(4):
+            self.acc_lines[i].set_data(t_plot, acc_series[i])
 
         yaw6 = 0.0
         yaw_unwrapped6 = None
+        roll_s, pitch_s, yaw_s = [], [], []
         for name in FILTER_NAMES:
-            e = np.degrees(np.asarray(hist_euler[name]))
-            self.roll_lines[name].set_data(t, e[:, 0])
-            self.pitch_lines[name].set_data(t, e[:, 1])
+            e = np.degrees(euler_hist[name])
+            rs = decimate(e[:, 0])
+            ps = decimate(e[:, 1])
             yaw_unwrapped = np.degrees(np.unwrap(np.radians(e[:, 2])))
-            self.yaw_lines[name].set_data(t, yaw_unwrapped)
+            ys = decimate(yaw_unwrapped)
+            self.roll_lines[name].set_data(t_plot, rs)
+            self.pitch_lines[name].set_data(t_plot, ps)
+            self.yaw_lines[name].set_data(t_plot, ys)
+            roll_s.append(rs)
+            pitch_s.append(ps)
+            yaw_s.append(ys)
             if name == "sixaxis":
                 yaw6 = float(yaw_unwrapped[-1])
                 yaw_unwrapped6 = yaw_unwrapped
 
+        # Robust Y ranges: a single outlier must not flatten a curve for seconds.
+        self._robust_ylim(self.ax_acc, acc_series)
+        self._robust_ylim(self.ax_roll, roll_s)
+        self._robust_ylim(self.ax_pitch, pitch_s)
+        self._robust_ylim(self.ax_yaw, yaw_s)
         for ax in (self.ax_acc, self.ax_roll, self.ax_pitch, self.ax_yaw):
-            ax.relim()
-            ax.autoscale_view()
+            ax.set_xlim(0.0, self.window)
 
         yaw_rate = 0.0
-        if yaw_unwrapped6 is not None and len(t) > 20:
-            n2 = min(len(t), 1600)
-            span = t[-1] - t[-n2]
+        if yaw_unwrapped6 is not None and n > 20:
+            i2 = int(np.searchsorted(t, t[-1] - 2.0))
+            i2 = max(0, min(i2, n - 2))
+            span = t[-1] - t[i2]
             if span > 0.5:
-                yaw_rate = (yaw_unwrapped6[-1] - yaw_unwrapped6[-n2]) / span
+                yaw_rate = (yaw_unwrapped6[-1] - yaw_unwrapped6[i2]) / span
 
         ref = filters["sixaxis"].q
-        dqs = " / ".join(f"{quat_angle_deg(filters[n].q, ref):.1f}"
-                         for n in ("mahony", "madgwick", "ekf"))
+        dqs = " / ".join(f"{quat_angle_deg(filters[nm].q, ref):.1f}"
+                         for nm in ("mahony", "madgwick", "ekf"))
         self.fig.suptitle(
             f"seq {seq} | {rate:.0f} Hz | yaw {yaw6:+.2f} deg ({yaw_rate:+.3f} deg/s)"
             f" | dq vs SixAxis (Mahony/Madgwick/EKF): {dqs} deg",
@@ -442,8 +607,35 @@ class LivePlot:
         self.fig.canvas.draw_idle()
         self.plt.pause(0.001)
 
+    @staticmethod
+    def _robust_ylim(ax, series, pad=0.15):
+        """Percentile Y range: one outlier cannot flatten the whole curve."""
+        vals = np.concatenate([np.asarray(a)[np.isfinite(a)] for a in series])
+        if vals.size == 0:
+            return
+        lo, hi = np.percentile(vals, [1, 99])
+        span = max(hi - lo, 1e-6)
+        ax.set_ylim(lo - pad * span, hi + pad * span)
+
     def alive(self) -> bool:
-        return self.plt.fignum_exists(self.fig.number)
+        try:
+            return self.plt.fignum_exists(self.fig.number)
+        except Exception:
+            return False
+
+    def pump(self):
+        """Process GUI events without touching the data (keeps the window alive)."""
+        try:
+            self.fig.canvas.draw_idle()
+            self.plt.pause(0.005)
+        except Exception:
+            pass
+
+    def close(self):
+        try:
+            self.plt.close(self.fig)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -469,8 +661,8 @@ def parse_args():
     p.add_argument("--raw-gyro", action="store_true",
                    help="feed the raw (uncalibrated) gyro to every filter "
                         "(default: subtract the calibrated bias from all of them)")
-    p.add_argument("--history", type=float, default=8.0,
-                   help="seconds of history kept for the plots")
+    p.add_argument("--history", type=float, default=3.0,
+                   help="sliding time window of the plots [s]")
     p.add_argument("--log", default=None, help="write decoded samples to a CSV file")
     p.add_argument("--simulate", action="store_true",
                    help="use a synthetic 800 Hz source (no CAN hardware needed)")
@@ -484,124 +676,95 @@ def parse_args():
 def main():
     args = parse_args()
 
+    capacity = max(200, int(args.history * 1200))
     bus = None
     if args.simulate:
-        reader = SimReader(static_seconds=args.calib_seconds)
+        reader = SimReader(args.calib_seconds, capacity, args.raw_gyro,
+                           args.mahony_kp, args.mahony_ki, args.madgwick_gain)
     else:
         try:
             bus = open_bus(args)
         except Exception as exc:
             sys.exit(f"failed to open CAN bus: {exc}")
-        reader = CanReader(bus, log_path=args.log)
+        reader = CanReader(bus, args.calib_seconds, capacity, args.raw_gyro,
+                           args.mahony_kp, args.mahony_ki, args.madgwick_gain,
+                           log_path=args.log)
     reader.start()
     print("waiting for CAN FD frames (ID 0x01) ..." if not args.simulate
           else "simulating a tumbling board at 800 Hz ...")
 
-    # ---- startup static calibration -------------------------------------
-    t_cal = time.perf_counter()
-    calib = []
-    while time.perf_counter() - t_cal < args.calib_seconds and reader.running:
-        if reader.samples:
-            calib.append(reader.samples.popleft())
-        else:
-            time.sleep(0.002)
-    if reader.error:
-        sys.exit(f"CAN read error: {reader.error}")
-    if len(calib) < 50:
-        sys.exit("no/too few CAN frames received - check the bus and the interface setup")
+    # ---- GUI first, so the window is not a white rectangle -----------------
+    # The plot is created before the calibration finishes; the main thread
+    # pumps the GUI event loop while waiting, then starts rendering.
+    plot = None if args.no_plot else LivePlot(args.history)
 
-    accels = np.asarray([c[2] for c in calib])
-    gyros = np.asarray([c[3] for c in calib])
-    bias = gyros.mean(axis=0)
-    accel0 = accels.mean(axis=0)
-    print(f"calibrated with {len(calib)} frames: "
-          f"|a|={np.linalg.norm(accel0):.2f} m/s^2, "
-          f"gyro bias={np.degrees(bias)} deg/s")
-    if abs(np.linalg.norm(accel0) - GRAVITY) > 0.1 * GRAVITY or np.linalg.norm(bias) > 0.1:
-        print("WARNING: the board was not still during calibration; the bias may be off")
+    # ---- acquisition + filters live in the reader thread -----------------
+    # The main thread only waits for the calibration, then renders. It never
+    # touches the sample stream, so a slow redraw cannot delay acquisition.
+    t_wait = time.perf_counter()
+    last_pump = 0.0
+    while not reader.ready.wait(0.02):
+        if plot is not None and time.perf_counter() - last_pump > 0.2:
+            plot.pump()
+            last_pump = time.perf_counter()
+        if reader.error is not None:
+            if plot is not None:
+                plot.close()
+            sys.exit(f"CAN read error: {reader.error}")
+        if time.perf_counter() - t_wait > args.calib_seconds + 10.0:
+            if plot is not None:
+                plot.close()
+            sys.exit("no/too few CAN frames received - check the bus and the interface setup")
 
-    filters = {
-        "mahony": AhrsMahony(args.mahony_kp, args.mahony_ki),
-        "madgwick": AhrsMadgwick(args.madgwick_gain),
-        "ekf": AhrsEkf(),
-        "sixaxis": SixAxis(),
-    }
-    # Fair comparison: every estimator gets the same, bias-calibrated gyro. With
-    # --raw-gyro the raw stream is used and only SixAxis keeps the bias.
-    # Note the SixAxis bias must match the input: in the default (already
-    # corrected) case its internal bias must be zero, otherwise the bias is
-    # subtracted twice and the yaw drifts in the wrong direction.
-    common_bias = np.zeros(3) if args.raw_gyro else bias
-    for f in filters.values():
-        f.reset(accel0, bias if args.raw_gyro else None)
-    print(f"gyro input: {'raw' if args.raw_gyro else 'calibrated bias removed'} "
-          f"(bias={np.round(np.degrees(common_bias), 4)} deg/s)")
+    print(f"calibrated with {reader.calib_count} frames: "
+          f"|a|={np.linalg.norm(reader.accel0):.2f} m/s^2, "
+          f"gyro bias={np.round(np.degrees(reader.bias), 4)} deg/s")
+    print(f"gyro input: {'raw' if args.raw_gyro else 'calibrated bias removed'}")
 
-    # ---- rolling history -------------------------------------------------
-    maxlen = max(100, int(args.history * 1000))
-    hist_t = deque(maxlen=maxlen)
-    hist_euler = {n: deque(maxlen=maxlen) for n in FILTER_NAMES}
-    hist_acc = {k: deque(maxlen=maxlen) for k in ("ax", "ay", "az", "mag")}
-
-    plot = None if args.no_plot else LivePlot()
-    last_t = None
+    filters = reader.filters
     last_redraw = 0.0
     last_print = 0.0
-    rate_t0 = time.perf_counter()
-    rate_n0 = 0
-    rate = 0.0
-    last_seq = 0
-    last_temp = 0.0
     running = True
     t_start = time.perf_counter()
 
+    def current_rate(snap):
+        if snap is None or len(snap[0]) < 10:
+            return 0.0
+        t = snap[0]
+        i0 = max(0, len(t) - 1200)
+        span = t[-1] - t[i0]
+        return (len(t) - 1 - i0) / span if span > 0.0 else 0.0
+
     try:
         while running:
-            processed = 0
-            while reader.samples and processed < 400:
-                t, seq, accel, gyro, temp = reader.samples.popleft()
-                processed += 1
-                last_seq, last_temp = seq, temp
-                if last_t is not None:
-                    dt = t - last_t
-                    if 0.0 < dt < 0.1:
-                        for f in filters.values():
-                            f.update(accel, gyro - common_bias, dt)
-                        hist_t.append(t)
-                        for name, f in filters.items():
-                            hist_euler[name].append(quat_to_euler(f.q))
-                        rot = quat_to_rot(filters["sixaxis"].q)
-                        a_world = rot @ accel + np.array([0.0, 0.0, -GRAVITY])
-                        hist_acc["ax"].append(a_world[0])
-                        hist_acc["ay"].append(a_world[1])
-                        hist_acc["az"].append(a_world[2])
-                        hist_acc["mag"].append(float(np.linalg.norm(a_world)))
-                last_t = t
-
             now = time.perf_counter()
-            if now - rate_t0 >= 1.0:
-                rate = (last_seq - rate_n0) / (now - rate_t0)
-                rate_n0 = last_seq
-                rate_t0 = now
+            snap = reader.history.snapshot()
+            rate = current_rate(snap)
 
             if plot is not None:
-                if now - last_redraw > 0.05:
-                    plot.update(hist_t, hist_euler, hist_acc, filters,
-                                last_seq, rate, last_temp)
-                    last_redraw = now
-                    if not plot.alive():
+                if not plot.alive():
+                    # The user closed the window: stop cleanly.
+                    running = False
+                elif now - last_redraw > 0.1:
+                    try:
+                        plot.update(snap, filters, reader.last_seq, rate, reader.last_temp)
+                    except Exception as exc:
+                        # A redraw can fail while the window is being destroyed.
+                        print(f"plot error: {exc}")
                         running = False
-            elif now - last_print > 0.2:
-                e = {n: np.degrees(np.asarray(hist_euler[n][-1])) if hist_euler[n] else (0, 0, 0)
-                     for n in FILTER_NAMES}
-                print(f"seq {last_seq} {rate:5.0f} Hz | "
+                    last_redraw = now
+                else:
+                    time.sleep(0.005)
+            elif snap is not None and now - last_print > 0.2:
+                e = {n: np.degrees(snap[1][n][-1]) for n in FILTER_NAMES}
+                print(f"seq {reader.last_seq} {rate:5.0f} Hz | "
                       f"r/p/y {e['sixaxis'][0]:7.2f}/{e['sixaxis'][1]:7.2f}/{e['sixaxis'][2]:+8.2f} | "
                       f"mahony {e['mahony'][0]:7.2f}/{e['mahony'][1]:7.2f}/{e['mahony'][2]:+8.2f} | "
                       f"madgwick {e['madgwick'][0]:7.2f}/{e['madgwick'][1]:7.2f}/{e['madgwick'][2]:+8.2f} | "
                       f"ekf {e['ekf'][0]:7.2f}/{e['ekf'][1]:7.2f}/{e['ekf'][2]:+8.2f}")
                 last_print = now
             else:
-                time.sleep(0.002)
+                time.sleep(0.005)
 
             if args.duration > 0.0 and (now - t_start) > args.duration:
                 running = False
@@ -613,8 +776,13 @@ def main():
     finally:
         reader.stop()
         reader.join(timeout=1.0)
+        if plot is not None:
+            plot.close()
         if bus is not None:
-            bus.shutdown()
+            try:
+                bus.shutdown()
+            except Exception:
+                pass
         print("bye")
 
 

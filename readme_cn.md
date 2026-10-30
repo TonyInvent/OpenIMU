@@ -361,6 +361,9 @@ python tools/ahrs_demo.py --simulate
 
 可选参数：`--mahony-kp`、`--mahony-ki`、`--madgwick-beta`、`--calib-seconds`、`--history`、`--log samples.csv`、`--f-clock`（PCAN 时钟，默认 80 MHz）。
 
+所有带时间轴的图都使用**固定滑动窗口**（`--history`，默认 3 s）：曲线是滚动显示的，而不是
+一直累计，这样用肉眼评估精度会容易得多。3D 姿态图不涉及时间轴。
+
 ### 8.3 基于 ahrs 库的扩展对比：Mahony / Madgwick / EKF / SixAxis
 
 `tools/ahrs_lib_compare.py` 是另一个独立 demo：Mahony、Madgwick、四元数 EKF 取自
@@ -377,6 +380,32 @@ python tools/ahrs_lib_compare.py --simulate                # 无硬件
 默认四个算法拿到的是**同一个已扣除标定偏置**的陀螺数据（公平对比）；加 `--raw-gyro`
 则改为喂原始陀螺，此时只有 SixAxis 用内部标定偏置——这也正是各算法自身偏置处理能力
 （Mahony 的积分、EKF 的偏置状态、Madgwick 没有偏置状态）显现出来的时候。
+
+### 8.4 ESKF 实时 demo（6 轴无磁力计）
+
+纯 6 轴板子推荐用 `tools/eskf_zaru.py`：3 维旋转误差 ESKF（so(3) 右乘扰动，
+静态零偏由启动标定锁定）加上 **ZARU**（零角速度修正）。板子静止一段短窗口时，
+陀螺读数就是零偏，于是用该窗口的陀螺均值缓慢重新学习零偏——这样能跟上陀螺随
+温度的漂移，又不会让零偏去"抵消"姿态误差（把零偏放进卡尔曼状态正是会让 yaw
+崩掉的原因）。
+
+仪表盘和 CAN-FD 采集直接复用 `tools/eskf.py`，未做改动。
+
+```bash
+python tools/eskf_zaru.py --simulate
+python tools/eskf_zaru.py -i pcan -c PCAN_USBBUS1
+python tools/eskf_zaru.py -i pcan -c PCAN_USBBUS1 --zaru-tau 0   # 关闭 ZARU 对比
+```
+
+为什么不用更多状态：6 轴 IMU 只有 roll/pitch 可观（通过重力方向）。yaw 及其
+陀螺零偏不可观，把它们放进状态只会让它们和姿态互相"解释"，反而把姿态带坏。
+18 状态导航 ESKF 只适合有外部位置/速度源（轮速、GNSS、VIO）的系统。
+
+### 8.5 C++ ESKF（`eskf/`）
+
+`eskf/eskf.hpp` 是纯 Eigen（不依赖 Sophus）的 18 状态（p, v, R, bg, ba, g）
+误差状态滤波器，含位姿/位置/速度观测接口和一个闭环 demo。推导、编译方法和
+预期输出见 [eskf/README.md](eskf/README.md)。
 
 ---
 

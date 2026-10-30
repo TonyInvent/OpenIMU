@@ -373,6 +373,10 @@ demo estimates the gyro bias from that window and initialises all three filters.
 Options: `--mahony-kp`, `--mahony-ki`, `--madgwick-beta`, `--calib-seconds`,
 `--history`, `--log samples.csv`, `--f-clock` (PCAN clock, default 80 MHz).
 
+All time-based plots use a **fixed sliding window** (`--history`, default 3 s):
+the traces scroll instead of growing, which makes it much easier to judge the
+accuracy by eye. The 3-D attitude view is not time-based.
+
 ### 8.3 Library-based comparison: Mahony / Madgwick / EKF / SixAxis
 
 `tools/ahrs_lib_compare.py` is a separate, extended demo that takes Mahony,
@@ -392,6 +396,38 @@ the fair way to compare the algorithms; `--raw-gyro` feeds the raw stream
 instead, in which case only SixAxis applies its internal calibrated bias (that
 is when each estimator's own bias handling shows up: Mahony's integral, the
 EKF's bias state, Madgwick's lack of one).
+
+### 8.4 ESKF live demo (6-axis IMU, no magnetometer)
+
+`tools/eskf_zaru.py` is the recommended estimator for a bare 6-axis board: a
+3-dimensional rotation-error ESKF (right perturbation on so(3), static gyro
+bias locked by the startup calibration) plus a **ZARU** (zero angular rate
+update). Whenever the board has been still for a short window the gyro reading
+*is* the bias, so the bias is slowly re-learned against the mean gyro of that
+window. That follows the gyro temperature drift without ever letting the bias
+trade against the attitude error - which is exactly what a Kalman bias state
+would do, and what makes yaw collapse.
+
+The dashboard and CAN-FD acquisition are reused unchanged from `tools/eskf.py`.
+
+```bash
+python tools/eskf_zaru.py --simulate
+python tools/eskf_zaru.py -i pcan -c PCAN_USBBUS1
+python tools/eskf_zaru.py -i pcan -c PCAN_USBBUS1 --zaru-tau 0   # ZARU off
+```
+
+Why not more states: on a 6-axis IMU only roll/pitch are observable (through
+the gravity direction). Yaw - and its gyro bias - are not observable, so making
+them filter states only lets them trade against the attitude and corrupt it.
+The 18-state navigation ESKF is the right tool only when an external
+position/velocity source (wheel odometry, GNSS, VIO) is available.
+
+### 8.5 C++ ESKF (`eskf/`)
+
+`eskf/eskf.hpp` is the 18-state (p, v, R, bg, ba, g) error-state filter in pure
+Eigen (no Sophus), with pose/position/velocity observation helpers and a
+closed-loop demo. See [eskf/README.md](eskf/README.md) for the derivation, the
+build instructions and the expected output.
 
 ---
 
