@@ -284,6 +284,7 @@ class SimReader(threading.Thread):
     def run(self):
         q = np.array([1.0, 0.0, 0.0, 0.0])
         tumble = np.array([0.25, 0.12, 0.30])   # rad/s
+        bias = np.array([0.010, -0.005, 0.015]) * DEG   # rad/s, realistic IMU bias
         last = time.perf_counter()
         while self.running:
             now = time.perf_counter()
@@ -295,7 +296,7 @@ class SimReader(threading.Thread):
             q = quat_integrate(q, omega, dt)
             accel = quat_to_rot(q).T @ np.array([0.0, 0.0, GRAVITY])
             self.seq += 1
-            self.samples.append((now, self.seq, accel, omega.copy(), 25.0))
+            self.samples.append((now, self.seq, accel, omega + bias, 25.0))
             time.sleep(1.0 / 800.0)
 
     def stop(self):
@@ -527,9 +528,12 @@ def main():
     }
     # Fair comparison: every estimator gets the same, bias-calibrated gyro. With
     # --raw-gyro the raw stream is used and only SixAxis keeps the bias.
+    # Note the SixAxis bias must match the input: in the default (already
+    # corrected) case its internal bias must be zero, otherwise the bias is
+    # subtracted twice and the yaw drifts in the wrong direction.
     common_bias = np.zeros(3) if args.raw_gyro else bias
     for f in filters.values():
-        f.reset(accel0, None if args.raw_gyro else bias)
+        f.reset(accel0, bias if args.raw_gyro else None)
     print(f"gyro input: {'raw' if args.raw_gyro else 'calibrated bias removed'} "
           f"(bias={np.round(np.degrees(common_bias), 4)} deg/s)")
 
