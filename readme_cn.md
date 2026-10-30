@@ -391,6 +391,8 @@ python tools/ahrs_lib_compare.py --simulate                # 无硬件
 
 仪表盘和 CAN-FD 采集直接复用 `tools/eskf.py`，未做改动。
 
+![ESKF 实时界面](docs/eskf_gui.png)
+
 ```bash
 python tools/eskf_zaru.py --simulate
 python tools/eskf_zaru.py -i pcan -c PCAN_USBBUS1

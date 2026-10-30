@@ -410,6 +410,8 @@ would do, and what makes yaw collapse.
 
 The dashboard and CAN-FD acquisition are reused unchanged from `tools/eskf.py`.
 
+![ESKF demo window](docs/eskf_gui.png)
+
 ```bash
 python tools/eskf_zaru.py --simulate
 python tools/eskf_zaru.py -i pcan -c PCAN_USBBUS1
