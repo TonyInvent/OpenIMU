@@ -158,7 +158,13 @@ class ICM45686_ESKF5:
         H[0, 3] = 1.0
         H[1, 4] = 1.0
         V = np.eye(2, dtype=np.float64) * (sigma * sigma)
-        K = self.P @ H.T @ np.linalg.inv(H @ self.P @ H.T + V)
+        S = H @ self.P @ H.T + V
+        det = S[0, 0] * S[1, 1] - S[0, 1] * S[1, 0]
+        if abs(det) < 1e-18:
+            return
+        # closed-form 2x2 inverse: the LAPACK call was costing ~50 us/frame
+        Sinv = np.array([[S[1, 1], -S[0, 1]], [-S[1, 0], S[0, 0]]]) / det
+        K = self.P @ H.T @ Sinv
         dx = K @ (np.asarray(mean_gyro_xy, dtype=np.float64) - self.bg[0:2])
         self.bg[0] += dx[3]
         self.bg[1] += dx[4]
@@ -187,20 +193,31 @@ class ZARU:
         self.still_ratio = still_ratio
         self.buf = []
         self.mean_gyro = np.zeros(3)
+        self._dur = 0.0
+        self._sum = np.zeros(3)
+        self._n_still = 0
 
     def push(self, gyro_rad, acc_g, dt):
+        # O(1): keep running sums instead of re-scanning the 240-entry window
+        # every frame - that scan was ~40% of the per-frame budget.
         still = (np.linalg.norm(gyro_rad) < self.gyro_th
                  and abs(np.linalg.norm(acc_g) - 1.0) < self.accel_th)
         self.buf.append((still, gyro_rad.copy(), dt))
-        total = sum(d for _, _, d in self.buf)
-        while total > self.window and len(self.buf) > 1:
-            total -= self.buf.pop(0)[2]
+        self._dur += dt
+        if still:
+            self._sum += gyro_rad
+            self._n_still += 1
+        while self._dur > self.window and len(self.buf) > 1:
+            s, g, d = self.buf.pop(0)
+            self._dur -= d
+            if s:
+                self._sum -= g
+                self._n_still -= 1
         if len(self.buf) < 20:
             return False
-        n_still = sum(1 for s, _, _ in self.buf if s)
-        if n_still < self.still_ratio * len(self.buf):
+        if self._n_still < self.still_ratio * len(self.buf):
             return False
-        self.mean_gyro = np.mean([g for s, g, _ in self.buf if s], axis=0)
+        self.mean_gyro = self._sum / self._n_still
         return True
 
 
