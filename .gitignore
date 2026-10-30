@@ -34,11 +34,5 @@ __pycache__/
 # 3D preview build output (regenerate with tools/export_3d_stl.py)
 build/
 
-# Local toolchain (portable MinGW-w64 + Eigen used to build eskf/)
-.toolchain/
 
-# eskf demo binaries
-eskf/eskf_demo
-eskf/eskf_demo.exe
-eskf_traj.csv
 

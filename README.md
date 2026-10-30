@@ -422,13 +422,6 @@ them filter states only lets them trade against the attitude and corrupt it.
 The 18-state navigation ESKF is the right tool only when an external
 position/velocity source (wheel odometry, GNSS, VIO) is available.
 
-### 8.5 C++ ESKF (`eskf/`)
-
-`eskf/eskf.hpp` is the 18-state (p, v, R, bg, ba, g) error-state filter in pure
-Eigen (no Sophus), with pose/position/velocity observation helpers and a
-closed-loop demo. See [eskf/README.md](eskf/README.md) for the derivation, the
-build instructions and the expected output.
-
 ---
 
 ## 9. 3D-Printed Enclosure (FreeCAD)

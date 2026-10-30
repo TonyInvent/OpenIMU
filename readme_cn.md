@@ -401,12 +401,6 @@ python tools/eskf_zaru.py -i pcan -c PCAN_USBBUS1 --zaru-tau 0   # 关闭 ZARU �
 陀螺零偏不可观，把它们放进状态只会让它们和姿态互相"解释"，反而把姿态带坏。
 18 状态导航 ESKF 只适合有外部位置/速度源（轮速、GNSS、VIO）的系统。
 
-### 8.5 C++ ESKF（`eskf/`）
-
-`eskf/eskf.hpp` 是纯 Eigen（不依赖 Sophus）的 18 状态（p, v, R, bg, ba, g）
-误差状态滤波器，含位姿/位置/速度观测接口和一个闭环 demo。推导、编译方法和
-预期输出见 [eskf/README.md](eskf/README.md)。
-
 ---
 
 ## 9. 3D 打印外壳（FreeCAD）
