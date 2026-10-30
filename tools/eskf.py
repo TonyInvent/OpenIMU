@@ -406,7 +406,9 @@ class OpenIMUDashboard(QtWidgets.QMainWindow):
 
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.update_plots)
-        self.timer.start(15)
+        # 30 Hz is plenty for a 5 s window and halves the time the GUI holds
+        # the GIL, which is what the ESKF thread competes for.
+        self.timer.start(33)
 
     def closeEvent(self, event):
         self.receiver.running = False
