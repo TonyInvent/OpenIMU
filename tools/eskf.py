@@ -31,9 +31,9 @@ class ICM45686_ESKF:
     def __init__(self):
         self.q = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         self.bg = np.zeros(3, dtype=np.float64)  # Locked static gyro bias
-        self.P = np.diag([1e-3, 1e-3, 1e-3])     # 3x3 attitude error covariance
+        self.P = np.diag([1e-4, 1e-4, 1e-4])     # 3x3 attitude error covariance
 
-        self.var_g   = (np.radians(0.05)) ** 2
+        self.var_g   = (np.radians(0.008)) ** 2
         self.sigma_a = 0.04
         self.initialized = False
 
