@@ -27,6 +27,7 @@ extern "C" {
 #endif
 
 #include "main.h"
+#include "imu_config.h"
 
 /* ------------------------------------------------------------------------- */
 /* Register addresses (DREG_BANK1 - directly accessible over SPI)            */
@@ -153,6 +154,15 @@ HAL_StatusTypeDef ICM45686_Init(SPI_HandleTypeDef *hspi);
 HAL_StatusTypeDef ICM45686_ReadData(ICM45686_Data_t *data);
 HAL_StatusTypeDef ICM45686_ReadRegister(uint8_t reg, uint8_t *value);
 HAL_StatusTypeDef ICM45686_WriteRegister(uint8_t reg, uint8_t value);
+
+#if IMU_ENABLE_SOURCE_TIMESTAMP
+/* Optional FIFO transport: bounded 20-byte DREG burst and TDK-specified MREG
+ * inter-transaction settling. No symbol or register traffic in default builds. */
+HAL_StatusTypeDef ICM45686_SourceReadRegisters(uint8_t reg, uint8_t *buf, uint16_t len);
+HAL_StatusTypeDef ICM45686_SourceWriteRegisters(uint8_t reg, const uint8_t *buf, uint16_t len);
+HAL_StatusTypeDef ICM45686_SourceReadMreg(uint16_t addr, uint8_t *value);
+HAL_StatusTypeDef ICM45686_SourceWriteMreg(uint16_t addr, uint8_t value);
+#endif
 
 #ifdef __cplusplus
 }

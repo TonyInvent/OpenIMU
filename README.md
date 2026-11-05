@@ -1,5 +1,11 @@
 # open_imu — ICM-45686 → CAN FD Real-Time Data Stream
 
+This fork adds **optional FIFO hardware source timestamps**, disabled by default.
+Default builds retain the original 16-byte protocol and acquisition path; enabled
+builds use a versioned 32-byte frame with source time and clock identity.
+See [timestamp design/protocol](docs/source-timestamps.md),
+[command-line builds](cmake/BUILDING.md), and [validation](docs/timestamp-validation.md).
+
 An IMU data-acquisition and CAN FD transmission project based on the **STM32G431CBU6** + **ICM-45686** (6-axis gyro + accelerometer, SPI interface). The sensor outputs samples at **800 Hz ODR**, streamed in real time over **CAN FD (standard frame, ID = 0x01)**. The system runs FreeRTOS.
 
 Design goal: **the lowest possible end-to-end latency**.

@@ -327,3 +327,69 @@ HAL_StatusTypeDef ICM45686_ReadData(ICM45686_Data_t *data)
 
     return HAL_OK;
 }
+
+#if IMU_ENABLE_SOURCE_TIMESTAMP
+/* Optional FIFO-only transport. Original direct-register functions above are
+ * deliberately unchanged in both their call graph and default-off behavior. */
+#define ICM45686_SOURCE_SPI_TIMEOUT_MS 20U
+
+HAL_StatusTypeDef ICM45686_SourceReadRegisters(uint8_t reg, uint8_t *buf, uint16_t len)
+{
+    uint8_t tx[21] = {0U};
+    uint8_t rx[21];
+    if (icm_spi == NULL || buf == NULL || len == 0U || len > 20U) return HAL_ERROR;
+    tx[0] = reg | 0x80U;
+    ICM45686_CS_LOW();
+    HAL_StatusTypeDef result = HAL_SPI_TransmitReceive(icm_spi, tx, rx, (uint16_t)(len + 1U),
+                                                    ICM45686_SOURCE_SPI_TIMEOUT_MS);
+    ICM45686_CS_HIGH();
+    if (result != HAL_OK) return result;
+    for (uint16_t i = 0U; i < len; i++) buf[i] = rx[i + 1U];
+    return HAL_OK;
+}
+
+HAL_StatusTypeDef ICM45686_SourceWriteRegisters(uint8_t reg, const uint8_t *buf, uint16_t len)
+{
+    uint8_t tx[21];
+    uint8_t rx[21];
+    if (icm_spi == NULL || buf == NULL || len == 0U || len > 20U) return HAL_ERROR;
+    tx[0] = reg & 0x7FU;
+    for (uint16_t i = 0U; i < len; i++) tx[i + 1U] = buf[i];
+    ICM45686_CS_LOW();
+    HAL_StatusTypeDef result = HAL_SPI_TransmitReceive(icm_spi, tx, rx, (uint16_t)(len + 1U),
+                                                    ICM45686_SOURCE_SPI_TIMEOUT_MS);
+    ICM45686_CS_HIGH();
+    return result;
+}
+
+static uint8_t ICM45686_SourceMregValid(uint16_t addr)
+{
+    /* Match the forbidden MREG ranges in TDK inv_imu_transport.c / AN-000364. */
+    return (addr <= 0xAFFFU && !(addr > 0x23FFU && addr <= 0x3FFFU) &&
+            !(addr > 0x83FFU && addr <= 0x9FFFU)) ? 1U : 0U;
+}
+
+HAL_StatusTypeDef ICM45686_SourceReadMreg(uint16_t addr, uint8_t *value)
+{
+    uint8_t address[2] = {(uint8_t)(addr >> 8), (uint8_t)addr};
+    if (value == NULL || ICM45686_SourceMregValid(addr) == 0U) return HAL_ERROR;
+    /* TDK requires >=4 us before address access and before each data access.
+     * These infrequent configuration accesses use a conservative HAL millisecond
+     * delay, avoiding a new timer/DWT dependency. FIFO reads have no such delay. */
+    HAL_Delay(1U);
+    HAL_StatusTypeDef result = ICM45686_SourceWriteRegisters(ICM45686_REG_IREG_ADDR_15_8, address, 2U);
+    if (result != HAL_OK) return result;
+    HAL_Delay(1U);
+    return ICM45686_SourceReadRegisters(ICM45686_REG_IREG_DATA, value, 1U);
+}
+
+HAL_StatusTypeDef ICM45686_SourceWriteMreg(uint16_t addr, uint8_t value)
+{
+    uint8_t address[3] = {(uint8_t)(addr >> 8), (uint8_t)addr, value};
+    if (ICM45686_SourceMregValid(addr) == 0U) return HAL_ERROR;
+    HAL_Delay(1U);
+    HAL_StatusTypeDef result = ICM45686_SourceWriteRegisters(ICM45686_REG_IREG_ADDR_15_8, address, 3U);
+    HAL_Delay(1U);
+    return result;
+}
+#endif /* IMU_ENABLE_SOURCE_TIMESTAMP */

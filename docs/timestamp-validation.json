@@ -1,0 +1,56 @@
+{
+  "date": "2026-11-05",
+  "upstream_commit": "084aacd90565bac838c9c7f650ea869d62d6522b",
+  "compiler": "arm-none-eabi-gcc (Arm GNU Toolchain 14.3.Rel1 (Build arm-14.174)) 14.3.1 20250623",
+  "physical_hardware_tested": false,
+  "builds": {
+    "debug-default": {
+      "timestamp_enabled": false,
+      "flash_image_bytes": 28640,
+      "static_ram_bytes": 14120,
+      "flash_sha256": "0c933015b01277b09caf9a780f2ddc033bbcdc5d387ceb21ea7458e80a64be72",
+      "warnings": 0
+    },
+    "debug-off": {
+      "timestamp_enabled": false,
+      "flash_image_bytes": 28640,
+      "static_ram_bytes": 14120,
+      "flash_sha256": "0c933015b01277b09caf9a780f2ddc033bbcdc5d387ceb21ea7458e80a64be72",
+      "warnings": 0
+    },
+    "debug-on": {
+      "timestamp_enabled": true,
+      "flash_image_bytes": 33116,
+      "static_ram_bytes": 14168,
+      "flash_sha256": "9a1a1224a3c6dc1cc06df30085af225e3d9a1ae207be124ced2f379cbdc05a2e",
+      "warnings": 0
+    },
+    "release-default": {
+      "timestamp_enabled": false,
+      "flash_image_bytes": 17252,
+      "static_ram_bytes": 14112,
+      "flash_sha256": "6fd8c7c7ea8f95ef6c6534d0f5cd1a9535116168396c40d6e52bc6b78b99b6e3",
+      "warnings": 0
+    },
+    "release-on": {
+      "timestamp_enabled": true,
+      "flash_image_bytes": 20012,
+      "static_ram_bytes": 14160,
+      "flash_sha256": "19c28085c6397052e52a2cca0906d6b2a3f2f5f03b3c04f6b84162f4def2116b",
+      "warnings": 0
+    }
+  },
+  "tests": {
+    "fifo_driver_asan_ubsan_cases": 5,
+    "task_timestamp_asan_ubsan_cases": 5,
+    "arm_gcc_analyzer": [
+      "default_off:imu_task",
+      "default_off:icm45686",
+      "enabled:imu_task",
+      "enabled:icm45686",
+      "enabled:imu_timestamp",
+      "enabled:icm45686_fifo"
+    ],
+    "python_ruff_F_E9": "passed"
+  }
+}

@@ -1,0 +1,43 @@
+# Explicit baseline source inventory from .cproject's Core/Middlewares/Drivers
+# source entries. Optional FIFO/timestamp translation units are added only ON.
+set(OPENIMU_BASE_SOURCES
+    Core/Startup/startup_stm32g431cbux.s
+    Core/Src/main.c
+    Core/Src/imu_task.c
+    Core/Src/icm45686.c
+    Core/Src/app_freertos.c
+    Core/Src/stm32g4xx_hal_msp.c
+    Core/Src/stm32g4xx_hal_timebase_tim.c
+    Core/Src/stm32g4xx_it.c
+    Core/Src/system_stm32g4xx.c
+    Core/Src/syscalls.c
+    Core/Src/sysmem.c
+    Core/ThreadSafe/newlib_lock_glue.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_cortex.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_dma.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_dma_ex.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_exti.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_fdcan.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash_ex.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash_ramfunc.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_gpio.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pwr.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pwr_ex.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc_ex.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_spi.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_spi_ex.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_tim.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_tim_ex.c
+    Middlewares/Third_Party/FreeRTOS/Source/croutine.c
+    Middlewares/Third_Party/FreeRTOS/Source/event_groups.c
+    Middlewares/Third_Party/FreeRTOS/Source/list.c
+    Middlewares/Third_Party/FreeRTOS/Source/queue.c
+    Middlewares/Third_Party/FreeRTOS/Source/stream_buffer.c
+    Middlewares/Third_Party/FreeRTOS/Source/tasks.c
+    Middlewares/Third_Party/FreeRTOS/Source/timers.c
+    Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os2.c
+    Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F/port.c
+    Middlewares/Third_Party/FreeRTOS/Source/portable/MemMang/heap_4.c)

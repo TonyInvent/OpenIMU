@@ -28,6 +28,10 @@
 #include "icm45686.h"
 #include "main.h"
 #include "task.h"
+#if IMU_ENABLE_SOURCE_TIMESTAMP
+#include "icm45686_fifo.h"
+#include "imu_timestamp.h"
+#endif
 
 /* External peripheral handles from main.c */
 extern SPI_HandleTypeDef   hspi1;
@@ -36,7 +40,11 @@ extern FDCAN_HandleTypeDef hfdcan1;
 /* ------------------------------------------------------------------------- */
 /* Task configuration                                                        */
 /* ------------------------------------------------------------------------- */
+#if IMU_ENABLE_SOURCE_TIMESTAMP
+#define IMU_TASK_STACK_BYTES      (512U * 4U)
+#else
 #define IMU_TASK_STACK_BYTES      (256U * 4U)   /* 256 words = 1024 bytes */
+#endif
 
 static const osThreadAttr_t imu_task_attributes = {
     .name       = "imuTask",
@@ -77,6 +85,29 @@ FDCAN_ProtocolStatusTypeDef can_status = {0};
 FDCAN_ErrorCountersTypeDef   can_errors  = {0};
 
 static uint32_t led_error_last_tick = 0U;     /* last error fast-blink toggle (ms) */
+
+#if IMU_ENABLE_SOURCE_TIMESTAMP
+/* Optional counters are independent of the original direct-register mode. */
+volatile uint32_t imu_fifo_overflow_count = 0U;
+volatile uint32_t imu_fifo_invalid_count = 0U;
+volatile uint32_t imu_timestamp_error_count = 0U;
+volatile uint32_t imu_timestamp_epoch = 0U;
+volatile uint32_t imu_timestamp_boot_id = 0U;
+volatile uint32_t imu_fifo_notification_coalesced_count = 0U;
+static IMU_Timestamp_t source_clock;
+static uint8_t timestamp_epoch_pending;
+static uint8_t timestamp_epoch_reason;
+static uint32_t timestamp_status_last_tick;
+
+enum {
+    TIMESTAMP_EPOCH_BOOT = 1U,
+    TIMESTAMP_EPOCH_FIFO_FULL = 2U,
+    TIMESTAMP_EPOCH_SPI = 3U,
+    TIMESTAMP_EPOCH_FORMAT = 4U,
+    TIMESTAMP_EPOCH_TIME = 5U,
+    TIMESTAMP_EPOCH_SENSOR_RESET = 6U
+};
+#endif
 
 /* ------------------------------------------------------------------------- */
 /* Private function prototypes                                               */
@@ -138,6 +169,151 @@ static void LED_FatalBlink(void)
     }
 }
 
+#if IMU_ENABLE_SOURCE_TIMESTAMP
+static void IMU_BeginTimestampEpoch(uint8_t reason)
+{
+    IMU_TimestampReset(&source_clock);
+    imu_timestamp_epoch++;
+    timestamp_epoch_reason = reason;
+    timestamp_epoch_pending = 1U;
+}
+
+static void IMU_WriteU32BE(uint8_t *dst, uint32_t value)
+{
+    for (unsigned i = 0U; i < 4U; i++) dst[i] = (uint8_t)(value >> (24U - i * 8U));
+}
+
+/* A diagnostic boot token, not authentication or a persistent boot counter.
+ * Mix device identity, independent timer phase and physical sensor readings;
+ * collisions remain possible, so receivers must also check sequence/time
+ * continuity and always reset on a BOOT announcement. No Flash writes. */
+static uint32_t IMU_MakeBootId(const ICM45686_FifoSample_t *sample)
+{
+    uint32_t value = 2166136261UL;
+    const uint32_t words[] = {
+        HAL_GetUIDw0(), HAL_GetUIDw1(), HAL_GetUIDw2(), HAL_GetTick(), SysTick->VAL,
+        sample->timestamp_raw, (uint16_t)sample->data.accel[0],
+        (uint16_t)sample->data.accel[1], (uint16_t)sample->data.accel[2],
+        (uint16_t)sample->data.gyro[0], (uint16_t)sample->data.gyro[1],
+        (uint16_t)sample->data.gyro[2], (uint16_t)sample->data.temp
+    };
+    for (unsigned i = 0U; i < sizeof(words) / sizeof(words[0]); i++) {
+        for (unsigned b = 0U; b < 4U; b++) {
+            value ^= (uint8_t)(words[i] >> (b * 8U));
+            value *= 16777619UL;
+        }
+    }
+    return value != 0U ? value : 1U;
+}
+
+/* Announces format/epoch before any data from that epoch is queued. Repeated
+ * once per second for receivers joining an already-running sensor. Startup is
+ * an explicit boundary even when epoch=1 repeats after an MCU reboot. */
+static uint8_t IMU_SendTimestampStatus(const FDCAN_TxHeaderTypeDef *data_header)
+{
+    uint32_t now = HAL_GetTick();
+    if (timestamp_epoch_pending == 0U &&
+        (uint32_t)(now - timestamp_status_last_tick) < 1000U) return 1U;
+    FDCAN_TxHeaderTypeDef status = *data_header;
+    status.Identifier = IMU_TIMESTAMP_STATUS_CAN_ID;
+    status.DataLength = FDCAN_DLC_BYTES_16;
+    uint8_t bytes[16] = {'I', 'M', 'U', 'T', 1U, 0U, 1U, 32U,
+                         0U, 0U, 0U, 0U, 0x03U, 0x20U, 0U, 0U};
+    bytes[5] = timestamp_epoch_pending != 0U ? timestamp_epoch_reason : 0U;
+    IMU_WriteU32BE(bytes + 8U, imu_timestamp_epoch);
+    if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &status, bytes) != HAL_OK) {
+        imu_can_error_count++;
+        LED_ErrorBlink();
+        /* An unannounced epoch must never be silently mixed with old data. */
+        return timestamp_epoch_pending == 0U ? 1U : 0U;
+    }
+    timestamp_epoch_pending = 0U;
+    timestamp_status_last_tick = now;
+    return 1U;
+}
+
+static void IMU_RecoverFifo(ICM45686_FifoResult_t cause)
+{
+    uint8_t reason;
+    if (cause == ICM45686_FIFO_OVERFLOW) {
+        imu_fifo_overflow_count++;
+        reason = TIMESTAMP_EPOCH_FIFO_FULL;
+    } else if (cause == ICM45686_FIFO_CONFIG_ERROR) {
+        imu_fifo_invalid_count++;
+        reason = TIMESTAMP_EPOCH_SENSOR_RESET;
+    } else if (cause == ICM45686_FIFO_INVALID_FRAME) {
+        imu_fifo_invalid_count++;
+        reason = TIMESTAMP_EPOCH_FORMAT;
+    } else {
+        imu_spi_error_count++;
+        reason = TIMESTAMP_EPOCH_SPI;
+    }
+    LED_ErrorBlink();
+    HAL_NVIC_DisableIRQ(EXTI0_IRQn);
+    ICM45686_FifoResult_t recovered = cause == ICM45686_FIFO_CONFIG_ERROR ?
+        ICM45686_FIFO_CONFIG_ERROR : ICM45686_FifoFlush();
+    if (recovered != ICM45686_FIFO_OK) {
+        if (ICM45686_Init(&hspi1) != HAL_OK ||
+            ICM45686_FifoEnable() != ICM45686_FIFO_OK) LED_FatalBlink();
+    }
+    IMU_BeginTimestampEpoch(reason);
+    HAL_NVIC_ClearPendingIRQ(EXTI0_IRQn);
+    HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+    xTaskNotifyGive(imu_task_handle);
+}
+
+static void IMU_DrainTimestampedFifo(FDCAN_TxHeaderTypeDef *header,
+                                    uint8_t *bytes, uint16_t *sequence)
+{
+    /* Bound one scheduling turn, not the FIFO itself. Self-notify below when
+     * work remains so a threshold interrupt need not produce another edge. */
+    for (unsigned drained = 0U; drained < 32U; drained++) {
+        ICM45686_FifoSample_t sample;
+        ICM45686_FifoResult_t result = ICM45686_FifoRead(&sample);
+        if (result == ICM45686_FIFO_EMPTY) return;
+        if (result != ICM45686_FIFO_OK) {
+            IMU_RecoverFifo(result);
+            return;
+        }
+        uint64_t source_time_us;
+        if (!IMU_TimestampAdvance(&source_clock, sample.timestamp_raw, &source_time_us)) {
+            imu_timestamp_error_count++;
+            HAL_NVIC_DisableIRQ(EXTI0_IRQn);
+            if (ICM45686_FifoFlush() != ICM45686_FIFO_OK) {
+                if (ICM45686_Init(&hspi1) != HAL_OK ||
+                    ICM45686_FifoEnable() != ICM45686_FIFO_OK) LED_FatalBlink();
+            }
+            IMU_BeginTimestampEpoch(TIMESTAMP_EPOCH_TIME);
+            HAL_NVIC_ClearPendingIRQ(EXTI0_IRQn);
+            HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+            xTaskNotifyGive(imu_task_handle);
+            LED_ErrorBlink();
+            return;
+        }
+        if (imu_timestamp_boot_id == 0U) imu_timestamp_boot_id = IMU_MakeBootId(&sample);
+        /* Every optional data frame carries its own epoch and boot token:
+         * metadata loss must not silently assign it to a preceding epoch. */
+        IMU_PackFrame(bytes, (*sequence)++, &sample.data);
+        for (unsigned i = 0U; i < 8U; i++)
+            bytes[16U + i] = (uint8_t)(source_time_us >> (56U - i * 8U));
+        IMU_WriteU32BE(bytes + 24U, imu_timestamp_epoch);
+        IMU_WriteU32BE(bytes + 28U, imu_timestamp_boot_id);
+        HAL_FDCAN_GetProtocolStatus(&hfdcan1, &can_status);
+        HAL_FDCAN_GetErrorCounters(&hfdcan1, &can_errors);
+        if (IMU_SendTimestampStatus(header) == 0U) continue;
+        if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, header, bytes) != HAL_OK) {
+            imu_can_error_count++;
+            LED_ErrorBlink();
+        } else {
+            imu_sample_count++;
+            if ((imu_sample_count % LED_RUN_TOGGLE_FRAMES) == 0U) LED_TOGGLE();
+        }
+    }
+    xTaskNotifyGive(imu_task_handle);
+    osDelay(1U);
+}
+#endif
+
 /* ------------------------------------------------------------------------- */
 /* Public API                                                                */
 /* ------------------------------------------------------------------------- */
@@ -180,7 +356,9 @@ static void IMU_Task(void *argument)
     (void)argument;
 
     FDCAN_TxHeaderTypeDef TxHeader = {0};
+#if !IMU_ENABLE_SOURCE_TIMESTAMP
     ICM45686_Data_t       imu      = {0};
+#endif
     uint8_t               tx_data[IMU_CAN_DLC_BYTES];
     uint16_t              seq = 0U;
 
@@ -192,6 +370,10 @@ static void IMU_Task(void *argument)
         /* IMU not present / miswired: fast-blink forever. */
         LED_FatalBlink();
     }
+#if IMU_ENABLE_SOURCE_TIMESTAMP
+    if (ICM45686_FifoEnable() != ICM45686_FIFO_OK) LED_FatalBlink();
+    IMU_BeginTimestampEpoch(TIMESTAMP_EPOCH_BOOT);
+#endif
 
     /* 1b. Enable transmitter delay compensation (TDC) for the 5 Mbit/s data
      *     phase. Must be configured while the FDCAN is still in READY state
@@ -217,7 +399,11 @@ static void IMU_Task(void *argument)
     TxHeader.Identifier          = IMU_CAN_ID;
     TxHeader.IdType              = FDCAN_STANDARD_ID;
     TxHeader.TxFrameType         = FDCAN_DATA_FRAME;
+#if IMU_ENABLE_SOURCE_TIMESTAMP
+    TxHeader.DataLength          = FDCAN_DLC_BYTES_32;
+#else
     TxHeader.DataLength          = FDCAN_DLC_BYTES_16;
+#endif
     TxHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
     TxHeader.BitRateSwitch       = FDCAN_BRS_ON;
     TxHeader.FDFormat            = FDCAN_FD_CAN;
@@ -228,6 +414,10 @@ static void IMU_Task(void *argument)
     HAL_NVIC_SetPriority(EXTI0_IRQn, 5, 0);
     HAL_NVIC_ClearPendingIRQ(EXTI0_IRQn);
     HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+#if IMU_ENABLE_SOURCE_TIMESTAMP
+    /* FIFO may already contain data from before the interrupt was enabled. */
+    xTaskNotifyGive(imu_task_handle);
+#endif
 
     /* 4. Acquisition loop: one CAN FD frame per data-ready pulse (800 Hz) */
     for (;;) {
@@ -241,6 +431,10 @@ static void IMU_Task(void *argument)
             hfdcan1.Instance->CCCR &= ~FDCAN_CCCR_INIT;
         }
 
+#if IMU_ENABLE_SOURCE_TIMESTAMP
+        if (notified > 1U) imu_fifo_notification_coalesced_count += notified - 1U;
+        IMU_DrainTimestampedFifo(&TxHeader, tx_data, &seq);
+#else
         if (notified > 1U) {
             imu_missed_count += (notified - 1U);
         }
@@ -269,5 +463,6 @@ static void IMU_Task(void *argument)
                 LED_TOGGLE();
             }
         }
+#endif
     }
 }

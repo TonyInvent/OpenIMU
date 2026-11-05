@@ -1,0 +1,29 @@
+{
+  "passed": true,
+  "compiler": "arm-none-eabi-gcc (Arm GNU Toolchain 14.3.Rel1 (Build arm-14.174)) 14.3.1 20250623",
+  "upstream_commit": "084aacd90565bac838c9c7f650ea869d62d6522b",
+  "comparison": "Complete loadable flash BIN bytes, including vectors/code/data; excludes ELF debug metadata.",
+  "builds": {
+    "upstream": {
+      "bytes": 28640,
+      "sha256": "0c933015b01277b09caf9a780f2ddc033bbcdc5d387ceb21ea7458e80a64be72",
+      "source_timestamp": false,
+      "translation_units": 40,
+      "warnings": []
+    },
+    "default_off": {
+      "bytes": 28640,
+      "sha256": "0c933015b01277b09caf9a780f2ddc033bbcdc5d387ceb21ea7458e80a64be72",
+      "source_timestamp": false,
+      "translation_units": 40,
+      "warnings": []
+    },
+    "explicit_off": {
+      "bytes": 28640,
+      "sha256": "0c933015b01277b09caf9a780f2ddc033bbcdc5d387ceb21ea7458e80a64be72",
+      "source_timestamp": false,
+      "translation_units": 40,
+      "warnings": []
+    }
+  }
+}

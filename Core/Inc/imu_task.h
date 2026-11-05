@@ -13,6 +13,7 @@ extern "C" {
 #endif
 
 #include "cmsis_os.h"
+#include "imu_config.h"
 
 /**
   * @brief  CAN FD frame identifier used for IMU data.
@@ -20,9 +21,14 @@ extern "C" {
 #define IMU_CAN_ID              0x01U
 
 /**
-  * @brief  Number of data bytes in one IMU CAN FD frame (16 bytes).
+  * @brief  Payload size: original 16 bytes, or optional timestamp format 32.
   */
+#if IMU_ENABLE_SOURCE_TIMESTAMP
+#define IMU_CAN_DLC_BYTES       32U
+#define IMU_TIMESTAMP_STATUS_CAN_ID (IMU_CAN_ID + 0x100U)
+#else
 #define IMU_CAN_DLC_BYTES       16U
+#endif
 
 /**
   * @brief  Create and start the IMU acquisition/transmission task.

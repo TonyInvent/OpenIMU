@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {"major": 3, "minor": 21, "patch": 0},
+  "configurePresets": [
+    {
+      "name": "arm-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "${sourceDir}/cmake/arm-none-eabi.cmake",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug"}
+    },
+    {"name": "debug-default", "displayName": "Debug: timestamps default OFF", "inherits": "arm-base"},
+    {
+      "name": "debug-off", "displayName": "Debug: timestamps explicit OFF", "inherits": "arm-base",
+      "cacheVariables": {"OPENIMU_SOURCE_TIMESTAMP": "OFF"}
+    },
+    {
+      "name": "debug-on", "displayName": "Debug: optional source timestamps ON", "inherits": "arm-base",
+      "cacheVariables": {"OPENIMU_SOURCE_TIMESTAMP": "ON"}
+    },
+    {
+      "name": "release-default", "displayName": "Release: timestamps default OFF", "inherits": "arm-base",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}
+    },
+    {
+      "name": "release-on", "displayName": "Release: optional source timestamps ON", "inherits": "release-default",
+      "cacheVariables": {"OPENIMU_SOURCE_TIMESTAMP": "ON"}
+    }
+  ],
+  "buildPresets": [
+    {"name": "debug-default", "configurePreset": "debug-default"},
+    {"name": "debug-off", "configurePreset": "debug-off"},
+    {"name": "debug-on", "configurePreset": "debug-on"},
+    {"name": "release-default", "configurePreset": "release-default"},
+    {"name": "release-on", "configurePreset": "release-on"}
+  ]
+}

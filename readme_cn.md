@@ -1,5 +1,8 @@
 # open_imu — ICM-45686 → CAN FD 实时数据流
 
+本 fork 新增**默认关闭的 FIFO 硬件时间戳编译选项**。默认构建保留原采集路径和 16 字节协议；启用后使用带源时间与时钟段标识的 32 字节协议。
+详见 [功能与协议](docs/source-timestamps.md)、[命令行构建](cmake/BUILDING.md) 和 [验证结果](docs/timestamp-validation.md)。
+
 基于 **STM32G431CBU6** + **ICM-45686**（6 轴陀螺+加速度计，SPI 接口）的 IMU 数据采集与 CAN FD 发送工程。传感器以 **800 Hz ODR** 输出，数据通过 **CAN FD（标准帧 ID = 0x01）** 实时发送，系统基于 FreeRTOS。
 
 设计目标：**尽可能低的端到端延迟**。
