@@ -223,10 +223,6 @@ class OpenIMUReceiver(threading.Thread):
         self.sim_time_sec = 0.0
         self.ts_us = 0                  # exact unwrapped sensor clock (us)
         self.wrap_count = 0             # number of 16-bit rollovers seen
-        self.lag_us = 0.0               # extra transport latency above best case
-        self._lag_min = float('inf')    # best-case (offset + minimal transport)
-        self._rx_ts_us = 0
-        self._rx_last_ts = None
         self.last_ts = None
         self.total_frames = 0
         self.dropped_frames = 0
@@ -383,17 +379,6 @@ class OpenIMUReceiver(threading.Thread):
             acc_g = np.array([ax, ay, az], dtype=np.float64) / ACCEL_SCALE
             gyro_rad = np.radians(np.array([gx, gy, gz], dtype=np.float64) / GYRO_SCALE)
             temp_c = raw_temp / TEMP_SCALE + TEMP_OFFSET
-            # Transport latency: compare the host arrival clock with the
-            # sensor's own microsecond counter. The offset between the two
-            # clocks is unknown, so track the best case and report the excess -
-            # that is the part we can actually influence.
-            if self._rx_last_ts is not None:
-                self._rx_ts_us += (seq - self._rx_last_ts) & 0xFFFF
-            self._rx_last_ts = seq
-            lag = msg.timestamp - self._rx_ts_us * 1e-6
-            if lag < self._lag_min:
-                self._lag_min = lag
-            self.lag_us = (lag - self._lag_min) * 1e6
             self._raw_q.put((seq, acc_g, gyro_rad, temp_c))
             self._recv_n += 1
 
@@ -504,8 +489,6 @@ class OpenIMUDashboard(QtWidgets.QMainWindow):
         fps = self.receiver.fps
         odr = self.receiver.odr
         backlog = self.receiver.backlog
-        lag = self.receiver.lag_us
-        wraps = self.receiver.wrap_count
         dropped = self.receiver.dropped_frames
         temp_c = self.receiver.temp_c
         acc_norm = self.receiver.acc_norm_g
@@ -527,7 +510,7 @@ class OpenIMUDashboard(QtWidgets.QMainWindow):
         self.header.setText(
             f"Roll:{r[-1]:+7.2f} deg | Pitch:{p[-1]:+7.2f} deg | Yaw:{y[-1]:+7.2f} deg  ||  "
             f"|a|:{acc_norm:4.2f}g | Temp:{temp_c:4.1f} C | ODR:{odr:5.0f}Hz | "
-            f"FPS:{fps:5.0f} | Backlog:{backlog} | Lag:{lag:5.0f}us | Dropped:{dropped}"
+            f"FPS:{fps:5.0f} | Backlog:{backlog} | Dropped:{dropped}"
         )
 
 
