@@ -221,7 +221,7 @@ class OpenIMUReceiver(threading.Thread):
         self.hist = _History(maxlen)
 
         self.sim_time_sec = 0.0
-        self.last_seq = None
+        self.last_ts = None
         self.total_frames = 0
         self.dropped_frames = 0
         self.fps = 0.0          # processed frames per second
@@ -255,17 +255,24 @@ class OpenIMUReceiver(threading.Thread):
                 bitrate=1000000, data_bitrate=5000000
             )
 
-    def _process_raw_sample(self, seq, acc_g, gyro_rad, temp_c):
-        if self.last_seq is not None:
-            diff = (seq - self.last_seq) & 0xFFFF
-            if diff == 0:
-                return
-            if diff > 1 and diff < 1000:
-                self.dropped_frames += (diff - 1)
-            dt = min(diff * NOMINAL_DT, 0.05)
+    def _process_raw_sample(self, ts, acc_g, gyro_rad, temp_c):
+        # ts is the ICM-45686 hardware timestamp: 16-bit, 1 us / LSB, so it
+        # wraps every 65.536 ms. The delta is taken modulo 2**16 - that is the
+        # wrap unwrapping - so a wrap costs nothing and a real gap shows up as
+        # a large (but < 65.5 ms) delta.
+        if self.last_ts is not None:
+            dt = ((ts - self.last_ts) & 0xFFFF) * 1e-6
+            if dt <= 0.0:
+                return                      # duplicate timestamp: drop it
+            if dt > 0.020:                  # genuine gap (or several wraps)
+                dt = NOMINAL_DT
+            else:
+                missed = int(round(dt / NOMINAL_DT)) - 1
+                if missed > 0:
+                    self.dropped_frames += missed
         else:
             dt = NOMINAL_DT
-        self.last_seq = seq
+        self.last_ts = ts
         self.total_frames += 1
 
         if not self.eskf.initialized:

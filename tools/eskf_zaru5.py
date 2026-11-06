@@ -229,17 +229,21 @@ class Zaru5Receiver(OpenIMUReceiver):
         self.zaru_active = False
         self.zaru_count = 0
 
-    def _process_raw_sample(self, seq, acc_g, gyro_rad, temp_c):
-        if self.last_seq is not None:
-            diff = (seq - self.last_seq) & 0xFFFF
-            if diff == 0:
+    def _process_raw_sample(self, ts, acc_g, gyro_rad, temp_c):
+        # 16-bit hardware timestamp, 1 us / LSB, wraps every 65.536 ms
+        if self.last_ts is not None:
+            dt = ((ts - self.last_ts) & 0xFFFF) * 1e-6
+            if dt <= 0.0:
                 return
-            if 1 < diff < 1000:
-                self.dropped_frames += diff - 1
-            dt = min(diff * NOMINAL_DT, 0.05)
+            if dt > 0.020:
+                dt = NOMINAL_DT
+            else:
+                missed = int(round(dt / NOMINAL_DT)) - 1
+                if missed > 0:
+                    self.dropped_frames += missed
         else:
             dt = NOMINAL_DT
-        self.last_seq = seq
+        self.last_ts = ts
         self.total_frames += 1
 
         if not self.eskf.initialized:
