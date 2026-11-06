@@ -18,6 +18,14 @@
   */
 #include "icm45686.h"
 
+/* Data endianness mirrored from SREG_CTRL (affects register and FIFO decoding),
+ * the FIFO header tag observed on the first frame, and the count of frames
+ * rejected because that tag changed. */
+static uint8_t  icm45686_big_endian  = 0U;
+static uint8_t  icm45686_fifo_header = 0U;
+static uint8_t  icm45686_header_seen = 0U;
+static uint32_t icm45686_frame_errors = 0U;
+
 /* Software chip-select (CS) on PA4 - toggled manually around each transaction.
  * This sidesteps any STM32 hardware-NSS timing quirks. */
 #define ICM45686_CS_PORT    GPIOA
@@ -167,17 +175,6 @@ static HAL_StatusTypeDef ICM45686_SetLpfBw(uint16_t addr, uint8_t value)
 HAL_StatusTypeDef ICM45686_WriteRegister(uint8_t reg, uint8_t value)
 {
     return ICM45686_WriteRegisters(reg, &value, 1U);
-}
-
-static HAL_StatusTypeDef ICM45686_WriteRegisterChecked(uint8_t reg, uint8_t value, uint8_t mask)
-{
-    uint8_t check = 0U;
-
-    if (ICM45686_WriteRegister(reg, value) != HAL_OK ||
-        ICM45686_ReadRegister(reg, &check) != HAL_OK) {
-        return HAL_ERROR;
-    }
-    return ((check & mask) == (value & mask)) ? HAL_OK : HAL_ERROR;
 }
 
 HAL_StatusTypeDef ICM45686_ReadRegister(uint8_t reg, uint8_t *value)
@@ -391,14 +388,14 @@ HAL_StatusTypeDef ICM45686_ConfigFifo(void)
     }
 
     /* Accel and gyro share one FIFO rate, and no FSYNC tag may interleave. */
-    if (ICM45686_WriteRegisterChecked(ICM45686_REG_ODR_DECIMATE, 0x00U, 0xFFU) != HAL_OK) {
+    if (ICM45686_WriteRegisterChecked(ICM45686_REG_ODR_DECIMATE, 0x00U) != HAL_OK) {
         return HAL_ERROR;
     }
     {
         uint8_t fsync = 0U;
         if (ICM45686_ReadRegister(ICM45686_REG_FSYNC_CONFIG0, &fsync) == HAL_OK &&
             ICM45686_WriteRegisterChecked(ICM45686_REG_FSYNC_CONFIG0,
-                                          (uint8_t)(fsync & 0xF8U), 0x0FU) != HAL_OK) {
+                                          (uint8_t)(fsync & 0xF8U)) != HAL_OK) {
             return HAL_ERROR;
         }
     }
