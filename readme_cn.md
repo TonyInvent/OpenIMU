@@ -258,6 +258,32 @@ ICM-45686 的陀螺/加速度 UI 低通滤波器带宽可调，带宽越宽群�
 
 > 注意：若用 CubeMX 重新生成代码，会覆盖 `main.c` 里 SPI/FDCAN 的生成区初始化，需重新把 SPI 设为 **8-bit / Mode 3（CPOL 高、CPHA 第 2 边沿）/ 12.5 MHz / NSS 软件**，并把 **PA4 配成 GPIO 输出**（软件片选，空闲拉高）；FDCAN 设为 FD+BRS（1M/5M），且 `imu_task.c` 里的 TDC / bus-off 处理要保留。
 
+### 可选的 CMake 命令行构建
+
+也可以直接构建现有 STM32CubeIDE 工程的固件，无需启动 IDE。需要安装
+CMake 3.21 或更新版本、Ninja 和 Arm GNU Toolchain（`arm-none-eabi-gcc`）。
+将工具链的 `bin` 目录加入 `PATH`，或将环境变量 `ARM_GNU_TOOLCHAIN_ROOT`
+设置为工具链安装目录（包含 `bin` 的目录）。
+
+```sh
+cmake -S . -B build/cmake-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/cmake-release
+
+cmake -S . -B build/cmake-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/cmake-debug
+```
+
+每个构建目录包含 `open_imu.elf`、`open_imu.bin`、`open_imu.hex`、
+`open_imu.map` 和 `compile_commands.json`。使用原有烧录工具写入 ELF、HEX
+或 BIN；裸 BIN 文件的 Flash 基地址为 `0x08000000`。
+
+支持 `Debug`（`-O0 -g3`）和 `Release`（`-Os -g0`，默认）。构建使用仓库中
+现有的固件、启动汇编和链接脚本，采用 `.cproject` 对应的 Cortex-M4F 硬浮点
+配置及宏定义，不生成外设代码。后续调整工程时，需要同步维护两套构建配置的
+源文件选择、编译宏和参数。切换工具链时请使用新的构建目录。此命令行构建路径
+已在 Linux、Arm GNU GCC 14.3.1 下检查；原有 CubeIDE 构建方式仍可使用。
+
+
 ---
 
 ## 7. 在 Linux 上用 candump 接收数据
