@@ -3,6 +3,11 @@ cmake_minimum_required(VERSION 3.21)
 set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_LIST_DIR}/cmake/arm-none-eabi.cmake" CACHE FILEPATH "Arm toolchain")
 project(open_imu LANGUAGES C ASM)
 set(OPENIMU_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+option(OPENIMU_CAN_SYNC "Enable experimental, host-activated CAN clock synchronization" OFF)
+set(OPENIMU_NODE_ID "1" CACHE STRING "Unique CAN node ID (1..5)")
+if(NOT OPENIMU_NODE_ID MATCHES "^[1-5]$")
+    message(FATAL_ERROR "OPENIMU_NODE_ID must be 1..5")
+endif()
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Debug or Release" FORCE)
 endif()
@@ -33,6 +38,7 @@ target_include_directories(open_imu PRIVATE "${rtos}/include" "${rtos}/CMSIS_RTO
 target_compile_definitions(open_imu PRIVATE "$<$<CONFIG:Debug>:DEBUG>"
     "$<$<COMPILE_LANGUAGE:C>:USE_HAL_DRIVER>" "$<$<COMPILE_LANGUAGE:C>:STM32G431xx>"
     "$<$<COMPILE_LANGUAGE:C>:STM32_THREAD_SAFE_STRATEGY=4>")
+target_compile_definitions(open_imu PRIVATE OPENIMU_CAN_SYNC=$<BOOL:${OPENIMU_CAN_SYNC}> OPENIMU_NODE_ID=${OPENIMU_NODE_ID})
 set(cpu -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard)
 target_compile_options(open_imu PRIVATE ${cpu} "$<$<COMPILE_LANGUAGE:C>:--specs=nano.specs>"
     "$<$<COMPILE_LANGUAGE:C>:-ffunction-sections>" "$<$<COMPILE_LANGUAGE:C>:-fdata-sections>"

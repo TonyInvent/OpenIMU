@@ -13,11 +13,12 @@ extern "C" {
 #endif
 
 #include "cmsis_os.h"
+#include "imu_sync.h"
 
 /**
   * @brief  CAN FD frame identifier used for IMU data.
   */
-#define IMU_CAN_ID              0x01U
+#define IMU_CAN_ID              ((uint32_t)OPENIMU_NODE_ID)
 
 /**
   * @brief  Number of data bytes in one IMU CAN FD frame (16 bytes).

@@ -22,6 +22,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "imu_sync.h"
 #include "imu_task.h"
 /* USER CODE END Includes */
 
@@ -244,6 +245,15 @@ static void MX_FDCAN1_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN FDCAN1_Init 2 */
+#if OPENIMU_CAN_SYNC
+  /* Apply the optional filter allocation in a CubeMX-preserved section.
+   * The controller has not been started; reinitialize its configuration only. */
+  hfdcan1.Init.StdFiltersNbr = 1U;
+  if (HAL_FDCAN_Init(&hfdcan1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+#endif
 
   /* USER CODE END FDCAN1_Init 2 */
 

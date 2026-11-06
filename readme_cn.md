@@ -452,3 +452,9 @@ python tools/eskf_zaru5.py -i pcan -c PCAN_USBBUS1
 文件清单见 [3D/README.md](3D/README.md)。
 
 **推荐使用 PETG 打印。** 相比 PLA 更韧、翘曲更小、层间结合更好，适合这种带安装耳的小外壳。建议参数：喷嘴 240–250 °C / 热床 80 °C，3–4 圈外墙，25–40% 填充，0.16–0.20 mm 层高。
+
+## 实验性的 CAN 时间同步
+
+默认关闭的可选功能支持由上位机启动 CAN 时间映射。启用后仍须收到 START
+才扩展报文，原前 16 字节保持兼容。请参阅[配置及协议说明](docs/can-clock-sync.md)
+和[软件验证与待完成的硬件验收](docs/testing-can-clock-sync.md)。真实同步精度尚未验证。

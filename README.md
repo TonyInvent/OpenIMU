@@ -481,3 +481,10 @@ See [3D/README.md](3D/README.md) for the file list.
 less and has better layer adhesion, which suits this small enclosure with
 mounting ears. Suggested profile: 240-250 C nozzle / 80 C bed, 3-4 perimeters,
 25-40 % infill, 0.16-0.20 mm layers.
+
+## Experimental CAN clock synchronization
+
+An optional, default-off extension supports host-activated CAN-only clock mapping.
+See [configuration, protocol and compatibility](docs/can-clock-sync.md) and
+[software checks and pending hardware acceptance](docs/testing-can-clock-sync.md).
+Hardware accuracy has not been validated.
