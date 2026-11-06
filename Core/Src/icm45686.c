@@ -43,8 +43,8 @@ static uint8_t icm_endian_big = 0U;   /* 0 = little-endian, 1 = big-endian */
   */
 static HAL_StatusTypeDef ICM45686_WriteRegisters(uint8_t reg, const uint8_t *buf, uint16_t len)
 {
-    uint8_t tx[17]; /* 1 address byte + up to 16 data bytes */
-    uint8_t rx[17];
+    uint8_t tx[19]; /* 1 address byte + up to 18 data bytes (FIFO packet) */
+    uint8_t rx[19];
 
     if (icm_spi == NULL || buf == NULL || len == 0U || len > (sizeof(tx) - 1U)) {
         return HAL_ERROR;
@@ -73,8 +73,8 @@ static HAL_StatusTypeDef ICM45686_WriteRegisters(uint8_t reg, const uint8_t *buf
   */
 static HAL_StatusTypeDef ICM45686_ReadRegisters(uint8_t reg, uint8_t *buf, uint16_t len)
 {
-    uint8_t tx[17]; /* 1 address byte + up to 16 data bytes */
-    uint8_t rx[17];
+    uint8_t tx[19]; /* 1 address byte + up to 18 data bytes (FIFO packet) */
+    uint8_t rx[19];
 
     if (icm_spi == NULL || buf == NULL || len == 0U || len > (sizeof(tx) - 1U)) {
         return HAL_ERROR;
