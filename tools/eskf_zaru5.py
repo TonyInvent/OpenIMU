@@ -235,7 +235,7 @@ class Zaru5Receiver(OpenIMUReceiver):
             dt = ((ts - self.last_ts) & 0xFFFF) * 1e-6
             if dt <= 0.0:
                 return
-            if dt > 0.020:
+            if dt > 0.060:      # ambiguous only near the 65.536 ms counter wrap
                 dt = NOMINAL_DT
             else:
                 missed = int(round(dt / NOMINAL_DT)) - 1

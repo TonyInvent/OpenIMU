@@ -274,7 +274,10 @@ class OpenIMUReceiver(threading.Thread):
             if d_us >= 60000:
                 self.wrap_count += 1        # 16-bit counter rolled over
             dt = d_us * 1e-6
-            if dt > 0.020:                  # genuine gap: integrate one nominal step
+            # Integrate the interval the sensor actually measured. Only a delta
+            # within 6 ms of the 65.536 ms counter wrap is ambiguous, so that is
+            # the only case that falls back to the nominal step.
+            if d_us >= 60000:
                 dt = NOMINAL_DT
             else:
                 missed = int(round(dt / NOMINAL_DT)) - 1
