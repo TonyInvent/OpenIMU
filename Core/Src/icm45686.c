@@ -386,9 +386,11 @@ HAL_StatusTypeDef ICM45686_ConfigFifo(void)
         return HAL_ERROR;
     }
 
-    /* accel + gyro into the FIFO, timestamp appended to every packet */
+    /* accel + gyro into the FIFO, timestamp appended to every packet.
+     * fifo_if_en (bit0) is mandatory: without it the FIFO data path stays
+     * closed, the watermark is never reached and no interrupt is generated. */
     if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG3,
-                               ICM45686_FIFO_CFG3_ACCEL_GYRO) != HAL_OK) {
+                               ICM45686_FIFO_CFG3_IF_ACCEL_GYRO) != HAL_OK) {
         return HAL_ERROR;
     }
     if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG4,

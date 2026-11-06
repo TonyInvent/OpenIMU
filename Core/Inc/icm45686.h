@@ -72,7 +72,7 @@ extern "C" {
 
 #define ICM45686_FIFO_MODE_STREAM       0x01U  /* fifo_mode = 1                   */
 #define ICM45686_FIFO_CFG2_GT_TH        0x08U  /* interrupt when frames >= wm     */
-#define ICM45686_FIFO_CFG3_ACCEL_GYRO   0x06U  /* accel_en | gyro_en              */
+#define ICM45686_FIFO_CFG3_IF_ACCEL_GYRO 0x07U /* fifo_if_en | accel_en | gyro_en */
 #define ICM45686_FIFO_CFG4_TMST         0x02U  /* append 2-byte timestamp         */
 #define ICM45686_TMST_RESOL_1US         0x00U  /* tmst_resol = 0 -> 1 us / LSB    */
 #define ICM45686_INT1_CFG0_FIFO_THS     0x02U  /* INT1 on FIFO watermark          */
