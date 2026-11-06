@@ -75,8 +75,12 @@ def _s16(hi: int, lo: int) -> int:
 
 
 def decode_frame(data: bytes):
-    """16-byte big-endian payload -> (seq, accel[m/s^2], gyro[rad/s], temp[C])."""
-    seq = (data[0] << 8) | data[1]
+    """16-byte big-endian payload -> (stamp, accel[m/s^2], gyro[rad/s], temp[C]).
+
+    ``stamp`` is the ICM-45686 hardware timestamp: 16-bit, 1 us / LSB, so it
+    wraps every 65.536 ms and must be unwrapped modulo 2**16.
+    """
+    stamp = (data[0] << 8) | data[1]
     ax = _s16(data[2], data[3]) / ACCEL_LSB_PER_G * GRAVITY
     ay = _s16(data[4], data[5]) / ACCEL_LSB_PER_G * GRAVITY
     az = _s16(data[6], data[7]) / ACCEL_LSB_PER_G * GRAVITY
@@ -84,7 +88,7 @@ def decode_frame(data: bytes):
     gy = _s16(data[10], data[11]) / GYRO_LSB_PER_DPS * DEG
     gz = _s16(data[12], data[13]) / GYRO_LSB_PER_DPS * DEG
     temp = _s16(data[14], data[15]) / 132.48 + 25.0
-    return seq, np.array([ax, ay, az]), np.array([gx, gy, gz]), temp
+    return stamp, np.array([ax, ay, az]), np.array([gx, gy, gz]), temp
 
 
 # ---------------------------------------------------------------------------
@@ -331,33 +335,45 @@ class _AlgoSource(threading.Thread):
             f.reset(self.accel0, self.bias if self.raw_gyro else None)
         self._calib = []
         self._prev_t = None
+        self._prev_stamp = None
         self.ready.set()
 
     # -- one IMU frame ---------------------------------------------------
-    def _handle(self, t, seq, accel, gyro, temp):
-        self.last_seq, self.last_temp = seq, temp
+    def _handle(self, t, stamp, accel, gyro, temp):
+        self.last_seq, self.last_temp = stamp, temp
         if self.filters is None:
             if self._t0 is None:
                 self._t0 = t
-            self._calib.append((t, seq, accel, gyro, temp))
+            self._calib.append((t, stamp, accel, gyro, temp))
             if t - self._t0 >= self.calib_seconds:
                 self._finish_calibration()
             return
 
-        if self._prev_t is not None:
-            dt = t - self._prev_t
-            if 0.0 < dt < 0.1:
-                gyro_in = gyro if self.raw_gyro else gyro - self.bias
-                euler = {}
-                for name, f in self.filters.items():
-                    f.update(accel, gyro_in, dt)
-                    euler[name] = np.array(quat_to_euler(f.q))
-                rot = quat_to_rot(self.filters["sixaxis"].q)
-                a_world = rot @ accel + np.array([0.0, 0.0, -GRAVITY])
-                acc = np.array([a_world[0], a_world[1], a_world[2],
-                                float(np.linalg.norm(a_world))])
-                self.history.push(t, euler, acc)
+        # dt comes from the sensor's own 1 us timestamp, so SPI and interrupt
+        # jitter never reach the filters. Fall back to the arrival clock only
+        # when the delta is not plausible (gap or missed wrap).
+        dt = None
+        if self._prev_stamp is not None:
+            d = ((stamp - self._prev_stamp) & 0xFFFF) * 1e-6
+            if 0.0 < d < 0.020:
+                dt = d
+        if dt is None and self._prev_t is not None:
+            d = t - self._prev_t
+            dt = d if 0.0 < d < 0.1 else None
+
+        if dt is not None:
+            gyro_in = gyro if self.raw_gyro else gyro - self.bias
+            euler = {}
+            for name, f in self.filters.items():
+                f.update(accel, gyro_in, dt)
+                euler[name] = np.array(quat_to_euler(f.q))
+            rot = quat_to_rot(self.filters["sixaxis"].q)
+            a_world = rot @ accel + np.array([0.0, 0.0, -GRAVITY])
+            acc = np.array([a_world[0], a_world[1], a_world[2],
+                            float(np.linalg.norm(a_world))])
+            self.history.push(t, euler, acc)
         self._prev_t = t
+        self._prev_stamp = stamp
 
     def stop(self):
         self.running = False
@@ -378,7 +394,7 @@ class CanReader(_AlgoSource):
         try:
             if self.log_path:
                 self._log = open(self.log_path, "w", encoding="utf-8")
-                self._log.write("t,seq,ax,ay,az,gx,gy,gz,temp\n")
+                self._log.write("t,ts,ax,ay,az,gx,gy,gz,temp\n")
             while self.running:
                 msg = self.bus.recv(timeout=0.2)
                 if msg is None or msg.arbitration_id != CAN_ID:
@@ -600,7 +616,7 @@ class LivePlot:
         dqs = " / ".join(f"{quat_angle_deg(filters[nm].q, ref):.1f}"
                          for nm in ("mahony", "madgwick", "ekf"))
         self.fig.suptitle(
-            f"seq {seq} | {rate:.0f} Hz | yaw {yaw6:+.2f} deg ({yaw_rate:+.3f} deg/s)"
+            f"ts {seq} | {rate:.0f} Hz | yaw {yaw6:+.2f} deg ({yaw_rate:+.3f} deg/s)"
             f" | dq vs SixAxis (Mahony/Madgwick/EKF): {dqs} deg",
             fontsize=9,
         )
@@ -757,7 +773,7 @@ def main():
                     time.sleep(0.005)
             elif snap is not None and now - last_print > 0.2:
                 e = {n: np.degrees(snap[1][n][-1]) for n in FILTER_NAMES}
-                print(f"seq {reader.last_seq} {rate:5.0f} Hz | "
+                print(f"ts {reader.last_seq} {rate:5.0f} Hz | "
                       f"r/p/y {e['sixaxis'][0]:7.2f}/{e['sixaxis'][1]:7.2f}/{e['sixaxis'][2]:+8.2f} | "
                       f"mahony {e['mahony'][0]:7.2f}/{e['mahony'][1]:7.2f}/{e['mahony'][2]:+8.2f} | "
                       f"madgwick {e['madgwick'][0]:7.2f}/{e['madgwick'][1]:7.2f}/{e['madgwick'][2]:+8.2f} | "
