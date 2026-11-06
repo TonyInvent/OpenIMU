@@ -54,6 +54,40 @@ extern "C" {
 #define ICM45686_REG_ACCEL_CONFIG0     0x1BU
 #define ICM45686_REG_GYRO_CONFIG0      0x1CU
 
+/* --- FIFO + hardware timestamp (inv_imu_regmap_le.h) ---------------------- */
+#define ICM45686_REG_TMST_FSYNCH       0x0EU   /* timestamp counter, low 16 bits  */
+#define ICM45686_REG_TMST_FSYNCL       0x0FU
+#define ICM45686_REG_FIFO_COUNT_0      0x12U   /* FIFO frame count (not bytes)    */
+#define ICM45686_REG_FIFO_COUNT_1      0x13U
+#define ICM45686_REG_FIFO_DATA         0x14U
+#define ICM45686_REG_FIFO_CONFIG0      0x1DU   /* fifo_depth[5:0], fifo_mode[7:6] */
+#define ICM45686_REG_FIFO_CONFIG1_0    0x1EU   /* watermark low                   */
+#define ICM45686_REG_FIFO_CONFIG1_1    0x1FU   /* watermark high                  */
+#define ICM45686_REG_FIFO_CONFIG2      0x20U   /* bit3 wr_wm_gt_th, bit7 flush    */
+#define ICM45686_REG_FIFO_CONFIG3      0x21U   /* bit1 accel_en, bit2 gyro_en     */
+#define ICM45686_REG_FIFO_CONFIG4      0x22U   /* bit1 fifo_tmst_fsync_en         */
+#define ICM45686_REG_TMST_WOM_CONFIG   0x23U   /* bit5 tmst_resol, bit6 delta_en  */
+
+#define ICM45686_MREG_SMC_CONTROL_0     0xA258U /* bit0 tmst_en */
+
+#define ICM45686_FIFO_MODE_STREAM       0x01U  /* fifo_mode = 1                   */
+#define ICM45686_FIFO_CFG2_GT_TH        0x08U  /* interrupt when frames >= wm     */
+#define ICM45686_FIFO_CFG3_ACCEL_GYRO   0x06U  /* accel_en | gyro_en              */
+#define ICM45686_FIFO_CFG3_IF_ACCEL_GYRO 0x07U /* fifo_if_en | accel_en | gyro_en */
+#define ICM45686_FIFO_CFG4_TMST         0x02U  /* append 2-byte timestamp         */
+#define ICM45686_TMST_RESOL_1US         0x00U  /* tmst_resol = 0 -> 1 us / LSB    */
+#define ICM45686_INT1_CFG0_FIFO_THS     0x02U  /* INT1 on FIFO watermark          */
+
+/* One FIFO frame in 16-byte mode:
+ *   [0]      FIFO header
+ *   [1:7]    accel X/Y/Z  (little-endian int16)
+ *   [7:13]   gyro  X/Y/Z
+ *   [13]     temperature (single byte)
+ *   [14:16]  timestamp
+ * Size comes from TDK inv_imu_set_fifo_config(): 8 bytes per enabled sensor. */
+#define ICM45686_FIFO_PACKET_SIZE       16U
+#define ICM45686_FIFO_HEADER_SIZE       1U
+
 #define ICM45686_REG_WHO_AM_I          0x72U
 #define ICM45686_REG_REG_MISC2         0x7FU
 
@@ -151,6 +185,19 @@ typedef struct {
 /* Public API ----------------------------------------------------------------- */
 HAL_StatusTypeDef ICM45686_Init(SPI_HandleTypeDef *hspi);
 HAL_StatusTypeDef ICM45686_ReadData(ICM45686_Data_t *data);
+
+/* FIFO streaming with the hardware timestamp (1 us / LSB).
+ *
+ * Call ICM45686_ConfigFifo() once after ICM45686_Init(). From then on every
+ * FIFO-watermark interrupt means "exactly one packet is ready"; serve it with
+ * one ICM45686_ReadFifoPacket() call, which drains ONE 18-byte packet and
+ * returns the 14-byte sensor data plus the 16-bit timestamp. The FIFO is
+ * never allowed to accumulate: one packet in, one packet out, every 1.25 ms.
+ *
+ * The timestamp is 16-bit and wraps every 65536 us, so the host must unwrap it. */
+HAL_StatusTypeDef ICM45686_ConfigFifo(void);
+HAL_StatusTypeDef ICM45686_ReadFifoPacket(ICM45686_Data_t *data, uint16_t *timestamp);
+uint16_t ICM45686_ReadFifoCount(void);
 HAL_StatusTypeDef ICM45686_ReadRegister(uint8_t reg, uint8_t *value);
 HAL_StatusTypeDef ICM45686_WriteRegister(uint8_t reg, uint8_t value);
 

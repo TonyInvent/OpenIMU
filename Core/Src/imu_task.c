@@ -65,6 +65,7 @@ static TaskHandle_t imu_task_handle = NULL;   /* used for ISR -> task notify */
 
 /* Diagnostics (inspect in the debugger) */
 volatile uint32_t imu_sample_count = 0U;      /* total samples transmitted   */
+volatile uint32_t imu_fifo_backlog_count = 0U;/* frames skipped to stay current */
 volatile uint32_t imu_missed_count  = 0U;     /* data-ready overruns         */
 volatile uint32_t imu_can_error_count = 0U;   /* CAN queue failures          */
 volatile uint32_t imu_spi_error_count = 0U;   /* SPI read failures           */
@@ -90,10 +91,10 @@ static void IMU_Task(void *argument);
 /**
   * @brief  Pack one sample into the 16-byte CAN FD payload (big-endian).
   */
-static void IMU_PackFrame(uint8_t *dst, uint16_t seq, const ICM45686_Data_t *d)
+static void IMU_PackFrame(uint8_t *dst, uint16_t timestamp, const ICM45686_Data_t *d)
 {
-    dst[0]  = (uint8_t)(seq >> 8);
-    dst[1]  = (uint8_t)(seq & 0xFFU);
+    dst[0]  = (uint8_t)(timestamp >> 8);
+    dst[1]  = (uint8_t)(timestamp & 0xFFU);
 
     dst[2]  = (uint8_t)((uint16_t)d->accel[0] >> 8);
     dst[3]  = (uint8_t)((uint16_t)d->accel[0] & 0xFFU);
@@ -182,7 +183,6 @@ static void IMU_Task(void *argument)
     FDCAN_TxHeaderTypeDef TxHeader = {0};
     ICM45686_Data_t       imu      = {0};
     uint8_t               tx_data[IMU_CAN_DLC_BYTES];
-    uint16_t              seq = 0U;
 
     /* 0. Power-on indicator: turn the status LED solid ON. */
     LED_ON();
@@ -190,6 +190,13 @@ static void IMU_Task(void *argument)
     /* 1. Initialise the IMU and start the FDCAN peripheral */
     if (ICM45686_Init(&hspi1) != HAL_OK) {
         /* IMU not present / miswired: fast-blink forever. */
+        LED_FatalBlink();
+    }
+
+    /* 1a. FIFO streaming with the hardware timestamp (1 us / LSB):
+     *     watermark = 1 frame, interrupt on count >= watermark, timestamp
+     *     appended to every packet. One packet per interrupt, never batched. */
+    if (ICM45686_ConfigFifo() != HAL_OK) {
         LED_FatalBlink();
     }
 
@@ -245,13 +252,31 @@ static void IMU_Task(void *argument)
             imu_missed_count += (notified - 1U);
         }
 
-        if (ICM45686_ReadData(&imu) != HAL_OK) {
+        uint16_t timestamp = 0U;
+
+        /* Keep the FIFO shallow: if a scheduling hiccup let more than one frame
+         * queue up, drop the stale ones and transmit only the newest sample.
+         * Without this a single stall would leave a permanent latency offset,
+         * because each interrupt only ever drains one frame. */
+        {
+            uint16_t pending = ICM45686_ReadFifoCount();
+            while (pending > 1U) {
+                if (ICM45686_ReadFifoPacket(&imu, &timestamp) != HAL_OK) {
+                    break;
+                }
+                imu_fifo_backlog_count++;
+                pending--;
+            }
+        }
+
+        if (ICM45686_ReadFifoPacket(&imu, &timestamp) != HAL_OK) {
             imu_spi_error_count++;
             LED_ErrorBlink();
             continue;
         }
 
-        IMU_PackFrame(tx_data, seq++, &imu);
+        /* [0:1] of the CAN frame carries the sensor's hardware timestamp. */
+        IMU_PackFrame(tx_data, timestamp, &imu);
 
         /* Snapshot protocol status + error counters before queuing the next
          * frame, so post-enqueue bus/bit errors stay visible in the debugger. */
