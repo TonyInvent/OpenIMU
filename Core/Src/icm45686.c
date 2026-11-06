@@ -43,8 +43,8 @@ static uint8_t icm_endian_big = 0U;   /* 0 = little-endian, 1 = big-endian */
   */
 static HAL_StatusTypeDef ICM45686_WriteRegisters(uint8_t reg, const uint8_t *buf, uint16_t len)
 {
-    uint8_t tx[19]; /* 1 address byte + up to 18 data bytes (FIFO packet) */
-    uint8_t rx[19];
+    uint8_t tx[21]; /* 1 address byte + up to 20 data bytes (FIFO packet) */
+    uint8_t rx[21];
 
     if (icm_spi == NULL || buf == NULL || len == 0U || len > (sizeof(tx) - 1U)) {
         return HAL_ERROR;
@@ -73,8 +73,8 @@ static HAL_StatusTypeDef ICM45686_WriteRegisters(uint8_t reg, const uint8_t *buf
   */
 static HAL_StatusTypeDef ICM45686_ReadRegisters(uint8_t reg, uint8_t *buf, uint16_t len)
 {
-    uint8_t tx[19]; /* 1 address byte + up to 18 data bytes (FIFO packet) */
-    uint8_t rx[19];
+    uint8_t tx[21]; /* 1 address byte + up to 20 data bytes (FIFO packet) */
+    uint8_t rx[21];
 
     if (icm_spi == NULL || buf == NULL || len == 0U || len > (sizeof(tx) - 1U)) {
         return HAL_ERROR;
@@ -441,14 +441,14 @@ HAL_StatusTypeDef ICM45686_ReadFifoPacket(ICM45686_Data_t *data, uint16_t *times
         return HAL_ERROR;
     }
 
-    data->accel[0] = ICM45686_Combine(&buf[0]);
-    data->accel[1] = ICM45686_Combine(&buf[2]);
-    data->accel[2] = ICM45686_Combine(&buf[4]);
-    data->gyro[0]  = ICM45686_Combine(&buf[6]);
-    data->gyro[1]  = ICM45686_Combine(&buf[8]);
-    data->gyro[2]  = ICM45686_Combine(&buf[10]);
-    data->temp     = ICM45686_Combine(&buf[12]);
-    *timestamp     = (uint16_t)(((uint16_t)buf[15] << 8) | (uint16_t)buf[14]);
+    data->accel[0] = ICM45686_Combine(&buf[2]);
+    data->accel[1] = ICM45686_Combine(&buf[4]);
+    data->accel[2] = ICM45686_Combine(&buf[6]);
+    data->gyro[0]  = ICM45686_Combine(&buf[8]);
+    data->gyro[1]  = ICM45686_Combine(&buf[10]);
+    data->gyro[2]  = ICM45686_Combine(&buf[12]);
+    data->temp     = ICM45686_Combine(&buf[14]);
+    *timestamp     = (uint16_t)(((uint16_t)buf[19] << 8) | (uint16_t)buf[18]);
 
     return HAL_OK;
 }

@@ -77,8 +77,10 @@ extern "C" {
 #define ICM45686_TMST_RESOL_1US         0x00U  /* tmst_resol = 0 -> 1 us / LSB    */
 #define ICM45686_INT1_CFG0_FIFO_THS     0x02U  /* INT1 on FIFO watermark          */
 
-/* One FIFO packet: 16 bytes sensor data + 2 bytes timestamp = 18 bytes */
-#define ICM45686_FIFO_PACKET_SIZE       18U
+/* One FIFO packet: 2 bytes of FIFO header + 16 bytes sensor data
+ * + 2 bytes timestamp = 20 bytes. */
+#define ICM45686_FIFO_PACKET_SIZE       20U
+#define ICM45686_FIFO_HEADER_SIZE       2U
 
 #define ICM45686_REG_WHO_AM_I          0x72U
 #define ICM45686_REG_REG_MISC2         0x7FU
