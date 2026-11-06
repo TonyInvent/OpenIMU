@@ -14,7 +14,7 @@
 | SPI1_MISO | PA6 | ICM-45686 SDO |
 | SPI1_MOSI | PA7 | ICM-45686 SDI |
 | SPI1_CS | PA4 | ICM-45686 片选（软件 GPIO，低电平有效） |
-| EXTI0 / INT1 | PB0 | ICM-45686 数据就绪中断，上升沿触发 |
+| EXTI0 / INT1 | PB0 | ICM-45686 FIFO 水位中断，上升沿触发 |
 | FDCAN1_TX | PA12 | CAN FD 发送 |
 | FDCAN1_RX | PA11 | CAN FD 接收（本工程仅发送，未用） |
 | LED | PB2 | 状态 LED（灌电流：低电平点亮） |
@@ -107,7 +107,7 @@ Core/Src/stm32g4xx_it.c    EXTI0_IRQHandler
 
 ```
 字节      内容
-[0:1]    seq        帧序号（uint16，用于检测丢帧）
+[0:1]    timestamp  ICM-45686 硬件时间戳（uint16，1 µs/LSB，65.536 ms 回绕）
 [2:3]    accel X    原始值 int16
 [4:5]    accel Y
 [6:7]    accel Z
@@ -139,7 +139,7 @@ temp_°C  = raw_temp  / 132.48 + 25
 
 ```
 ID 0x001  [16]  30 F5 02 65 F1 8C 1C AE 00 0D 00 03 00 08 01 00
-           seq   | accel X/Y/Z (int16 大端) | gyro X/Y/Z (int16 大端) | temp
+           time  | accel X/Y/Z (int16 大端) | gyro X/Y/Z (int16 大端) | temp
 ```
 
 ---
@@ -304,16 +304,20 @@ can0  001  [16]  30 F5 02 65 F1 8C 1C AE 00 0D 00 03 00 08 01 00
 
 ### 7.3 解析一帧
 
-16 字节为大端：`seq[0:1]`、`accel X/Y/Z[2:7]`、`gyro X/Y/Z[8:13]`、`temp[14:15]`。
+16 字节为大端：`timestamp[0:1]`、`accel X/Y/Z[2:7]`、`gyro X/Y/Z[8:13]`、`temp[14:15]`。
+
+`timestamp` 是传感器采样瞬间的计数器：16 位、1 µs/LSB，每 65.536 ms 回绕一次。
+求差必须取模 2**16（`(t - t_prev) & 0xFFFF`），这样回绕不产生任何影响，差值就是
+真实采样间隔——滤波积分用的就是它。不要用 `<`/`>` 直接比较时间戳。
 
 ```python
 import struct
 b = bytes.fromhex("30 F5 02 65 F1 8C 1C AE 00 0D 00 03 00 08 01 00")
-seq = int.from_bytes(b[0:2], "big")
+ts  = int.from_bytes(b[0:2], "big")   # 1 µs/LSB，65.536 ms 回绕
 acc = struct.unpack(">3h", b[2:8])    # 原始 accel X/Y/Z
 gyr = struct.unpack(">3h", b[8:14])   # 原始 gyro  X/Y/Z
 tmp = struct.unpack(">h", b[14:16])[0]
-print(seq, [a / 8192.0 for a in acc], [g / 16.4 for g in gyr], tmp / 132.48 + 25)
+print(ts, [a / 8192.0 for a in acc], [g / 16.4 for g in gyr], tmp / 132.48 + 25)
 ```
 
 ---
