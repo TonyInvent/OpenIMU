@@ -169,6 +169,17 @@ HAL_StatusTypeDef ICM45686_WriteRegister(uint8_t reg, uint8_t value)
     return ICM45686_WriteRegisters(reg, &value, 1U);
 }
 
+static HAL_StatusTypeDef ICM45686_WriteRegisterChecked(uint8_t reg, uint8_t value, uint8_t mask)
+{
+    uint8_t check = 0U;
+
+    if (ICM45686_WriteRegister(reg, value) != HAL_OK ||
+        ICM45686_ReadRegister(reg, &check) != HAL_OK) {
+        return HAL_ERROR;
+    }
+    return ((check & mask) == (value & mask)) ? HAL_OK : HAL_ERROR;
+}
+
 HAL_StatusTypeDef ICM45686_ReadRegister(uint8_t reg, uint8_t *value)
 {
     return ICM45686_ReadRegisters(reg, value, 1U);
@@ -371,6 +382,27 @@ HAL_StatusTypeDef ICM45686_ConfigFifo(void)
         return HAL_ERROR;
     }
 
+    /* Mirror SREG_CTRL so register and FIFO decoding follow the device. */
+    {
+        uint8_t sreg = 0U;
+        if (ICM45686_ReadMreg(ICM45686_MREG_SREG_CTRL, &sreg, 1U) == HAL_OK) {
+            icm45686_big_endian = ((sreg & ICM45686_SREG_DATA_BIG_ENDIAN) != 0U) ? 1U : 0U;
+        }
+    }
+
+    /* Accel and gyro share one FIFO rate, and no FSYNC tag may interleave. */
+    if (ICM45686_WriteRegisterChecked(ICM45686_REG_ODR_DECIMATE, 0x00U, 0xFFU) != HAL_OK) {
+        return HAL_ERROR;
+    }
+    {
+        uint8_t fsync = 0U;
+        if (ICM45686_ReadRegister(ICM45686_REG_FSYNC_CONFIG0, &fsync) == HAL_OK &&
+            ICM45686_WriteRegisterChecked(ICM45686_REG_FSYNC_CONFIG0,
+                                          (uint8_t)(fsync & 0xF8U), 0x0FU) != HAL_OK) {
+            return HAL_ERROR;
+        }
+    }
+
     /* 2. Close the data path and put the FIFO in bypass before touching the
      *    configuration (same order as TDK inv_imu_set_fifo_config). */
     if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG3, 0x00U) != HAL_OK) {
@@ -442,10 +474,13 @@ uint16_t ICM45686_ReadFifoCount(void)
 {
     uint8_t count[2] = {0U, 0U};
 
-    if (ICM45686_ReadRegisters(ICM45686_REG_FIFO_COUNT_0, count, 2) != HAL_OK) {
+    /* AN-000364 2.2: read twice and use the second value. */
+    if (ICM45686_ReadRegisters(ICM45686_REG_FIFO_COUNT_0, count, 2) != HAL_OK ||
+        ICM45686_ReadRegisters(ICM45686_REG_FIFO_COUNT_0, count, 2) != HAL_OK) {
         return 0U;
     }
-    return (uint16_t)(((uint16_t)count[1] << 8) | (uint16_t)count[0]);
+    return icm45686_big_endian ? (uint16_t)(((uint16_t)count[0] << 8) | count[1])
+                               : (uint16_t)(((uint16_t)count[1] << 8) | count[0]);
 }
 
 /**
@@ -470,6 +505,16 @@ HAL_StatusTypeDef ICM45686_ReadFifoPacket(ICM45686_Data_t *data, uint16_t *times
         return HAL_ERROR;
     }
 
+    /* The FIFO header tag must stay constant: a change means the format or
+     * ODR changed under us, which would shift every following field. */
+    if (icm45686_header_seen == 0U) {
+        icm45686_fifo_header = buf[0];
+        icm45686_header_seen = 1U;
+    } else if (buf[0] != icm45686_fifo_header) {
+        icm45686_frame_errors++;
+        return HAL_ERROR;
+    }
+
     data->accel[0] = ICM45686_Combine(&buf[1]);
     data->accel[1] = ICM45686_Combine(&buf[3]);
     data->accel[2] = ICM45686_Combine(&buf[5]);
@@ -482,4 +527,17 @@ HAL_StatusTypeDef ICM45686_ReadFifoPacket(ICM45686_Data_t *data, uint16_t *times
     *timestamp     = ICM45686_Combine(&buf[14]);
 
     return HAL_OK;
+}
+
+HAL_StatusTypeDef ICM45686_ReadFifoStatus(uint8_t *status)
+{
+    if (status == NULL) {
+        return HAL_ERROR;
+    }
+    return ICM45686_ReadRegister(ICM45686_REG_INT1_STATUS0, status);
+}
+
+uint32_t ICM45686_GetFrameErrors(void)
+{
+    return icm45686_frame_errors;
 }

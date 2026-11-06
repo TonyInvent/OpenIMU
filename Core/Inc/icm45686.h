@@ -67,6 +67,10 @@ extern "C" {
 #define ICM45686_REG_FIFO_CONFIG3      0x21U   /* bit1 accel_en, bit2 gyro_en     */
 #define ICM45686_REG_FIFO_CONFIG4      0x22U   /* bit1 fifo_tmst_fsync_en         */
 #define ICM45686_REG_TMST_WOM_CONFIG   0x23U   /* bit5 tmst_resol, bit6 delta_en  */
+#define ICM45686_REG_FSYNC_CONFIG0      0x24U   /* low 3 bits: FSYNC tag off */
+#define ICM45686_REG_ODR_DECIMATE       0x28U   /* FIFO rate decimation       */
+#define ICM45686_STATUS_FIFO_FULL       0x01U
+#define ICM45686_STATUS_RESET_DONE      0x80U
 
 #define ICM45686_MREG_SMC_CONTROL_0     0xA258U /* bit0 tmst_en */
 
@@ -198,6 +202,8 @@ HAL_StatusTypeDef ICM45686_ReadData(ICM45686_Data_t *data);
 HAL_StatusTypeDef ICM45686_ConfigFifo(void);
 HAL_StatusTypeDef ICM45686_ReadFifoPacket(ICM45686_Data_t *data, uint16_t *timestamp);
 uint16_t ICM45686_ReadFifoCount(void);
+HAL_StatusTypeDef ICM45686_ReadFifoStatus(uint8_t *status);
+uint32_t ICM45686_GetFrameErrors(void);
 HAL_StatusTypeDef ICM45686_ReadRegister(uint8_t reg, uint8_t *value);
 HAL_StatusTypeDef ICM45686_WriteRegister(uint8_t reg, uint8_t value);
 

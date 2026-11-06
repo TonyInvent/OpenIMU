@@ -66,6 +66,8 @@ static TaskHandle_t imu_task_handle = NULL;   /* used for ISR -> task notify */
 /* Diagnostics (inspect in the debugger) */
 volatile uint32_t imu_sample_count = 0U;      /* total samples transmitted   */
 volatile uint32_t imu_fifo_backlog_count = 0U;/* frames skipped to stay current */
+volatile uint32_t imu_fifo_overflow_count = 0U;/* FIFO_FULL status seen        */
+volatile uint32_t imu_fifo_reset_count = 0U;  /* device reset seen            */
 volatile uint32_t imu_missed_count  = 0U;     /* data-ready overruns         */
 volatile uint32_t imu_can_error_count = 0U;   /* CAN queue failures          */
 volatile uint32_t imu_spi_error_count = 0U;   /* SPI read failures           */
@@ -273,6 +275,18 @@ static void IMU_Task(void *argument)
             imu_spi_error_count++;
             LED_ErrorBlink();
             continue;
+        }
+
+        {
+            uint8_t fifo_status = 0U;
+            if (ICM45686_ReadFifoStatus(&fifo_status) == HAL_OK) {
+                if ((fifo_status & ICM45686_STATUS_FIFO_FULL) != 0U) {
+                    imu_fifo_overflow_count++;
+                }
+                if ((fifo_status & ICM45686_STATUS_RESET_DONE) != 0U) {
+                    imu_fifo_reset_count++;
+                }
+            }
         }
 
         /* [0:1] of the CAN frame carries the sensor's hardware timestamp. */
