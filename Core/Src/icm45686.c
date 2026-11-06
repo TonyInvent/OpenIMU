@@ -359,52 +359,78 @@ static HAL_StatusTypeDef ICM45686_EnableTimestamp(void)
   */
 HAL_StatusTypeDef ICM45686_ConfigFifo(void)
 {
+    uint8_t reg   = 0U;
+    uint8_t retry;
+
+    /* 1. Timestamp counter: 1 us / LSB (SMC_CONTROL_0 bit0 = tmst_en). */
     if (ICM45686_EnableTimestamp() != HAL_OK) {
         return HAL_ERROR;
     }
-
-    /* 1 us / LSB, delta mode off */
     if (ICM45686_WriteRegister(ICM45686_REG_TMST_WOM_CONFIG,
                                ICM45686_TMST_RESOL_1US) != HAL_OK) {
         return HAL_ERROR;
     }
 
-    /* Start clean: flush any stale packets. */
-    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG2, 0x80U) != HAL_OK) {
+    /* 2. Close the data path and put the FIFO in bypass before touching the
+     *    configuration (same order as TDK inv_imu_set_fifo_config). */
+    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG3, 0x00U) != HAL_OK) {
+        return HAL_ERROR;
+    }
+    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG0, 0x00U) != HAL_OK) {
         return HAL_ERROR;
     }
 
-    /* Stream mode (fifo_mode = 1). */
-    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG0,
-                               (uint8_t)(ICM45686_FIFO_MODE_STREAM << 6)) != HAL_OK) {
-        return HAL_ERROR;
-    }
-
-    /* Watermark = 1 frame (16-bit, little-endian) */
+    /* 3. Watermark = 1 FRAME (the FIFO counts frames, not bytes). */
     if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG1_0, 0x01U) != HAL_OK ||
         ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG1_1, 0x00U) != HAL_OK) {
         return HAL_ERROR;
     }
 
-    /* accel + gyro into the FIFO, timestamp appended to every packet.
-     * fifo_if_en (bit0) is mandatory: without it the FIFO data path stays
-     * closed, the watermark is never reached and no interrupt is generated. */
-    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG3,
-                               ICM45686_FIFO_CFG3_IF_ACCEL_GYRO) != HAL_OK) {
-        return HAL_ERROR;
-    }
-    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG4,
-                               ICM45686_FIFO_CFG4_TMST) != HAL_OK) {
-        return HAL_ERROR;
-    }
-
-    /* Interrupt when count >= watermark */
+    /* 4. Interrupt when frame count >= watermark. */
     if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG2,
                                ICM45686_FIFO_CFG2_GT_TH) != HAL_OK) {
         return HAL_ERROR;
     }
 
-    /* INT1 now reports the FIFO watermark instead of DRDY */
+    /* 5. accel + gyro streams (16-bit mode). */
+    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG3,
+                               ICM45686_FIFO_CFG3_ACCEL_GYRO) != HAL_OK) {
+        return HAL_ERROR;
+    }
+
+    /* 6. Append the 2-byte timestamp to every frame. */
+    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG4,
+                               ICM45686_FIFO_CFG4_TMST) != HAL_OK) {
+        return HAL_ERROR;
+    }
+
+    /* 7. Flush whatever was queued while configuring and wait for the device
+     *    to release the flush bit (TDK polls it the same way). */
+    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG2,
+                               (uint8_t)(ICM45686_FIFO_CFG2_GT_TH | 0x80U)) != HAL_OK) {
+        return HAL_ERROR;
+    }
+    for (retry = 0U; retry < 20U; retry++) {
+        if (ICM45686_ReadRegister(ICM45686_REG_FIFO_CONFIG2, &reg) != HAL_OK) {
+            return HAL_ERROR;
+        }
+        if ((reg & 0x80U) == 0U) {
+            break;
+        }
+        HAL_Delay(1U);
+    }
+
+    /* 8. Start streaming, then close the data-path switch (fifo_if_en). */
+    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG0,
+                               (uint8_t)(ICM45686_FIFO_MODE_STREAM << 6)) != HAL_OK) {
+        return HAL_ERROR;
+    }
+    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG3,
+                               ICM45686_FIFO_CFG3_IF_ACCEL_GYRO) != HAL_OK) {
+        return HAL_ERROR;
+    }
+
+    /* 9. INT1 reports the FIFO watermark instead of DRDY. */
     return ICM45686_WriteRegister(ICM45686_REG_INT1_CONFIG0,
                                   ICM45686_INT1_CFG0_FIFO_THS);
 }
@@ -423,11 +449,14 @@ uint16_t ICM45686_ReadFifoCount(void)
 }
 
 /**
-  * @brief  Drain exactly one 18-byte FIFO packet.
+  * @brief  Drain exactly one 16-byte FIFO frame.
   *
-  *         Layout: accel X/Y/Z (6), gyro X/Y/Z (6), temperature (2),
-  *         timestamp (2). All values are 16-bit little-endian, matching the
-  *         device's default endianness.
+  *         Layout (TDK inv_imu_get_fifo_frame, 16-byte mode):
+  *           [0]     FIFO header
+  *           [1:7]   accel X/Y/Z  (little-endian int16)
+  *           [7:13]  gyro  X/Y/Z  (little-endian int16)
+  *           [13]    temperature  (single byte = MSB of the 16-bit value)
+  *           [14:16] timestamp
   */
 HAL_StatusTypeDef ICM45686_ReadFifoPacket(ICM45686_Data_t *data, uint16_t *timestamp)
 {
@@ -441,14 +470,16 @@ HAL_StatusTypeDef ICM45686_ReadFifoPacket(ICM45686_Data_t *data, uint16_t *times
         return HAL_ERROR;
     }
 
-    data->accel[0] = ICM45686_Combine(&buf[2]);
-    data->accel[1] = ICM45686_Combine(&buf[4]);
-    data->accel[2] = ICM45686_Combine(&buf[6]);
-    data->gyro[0]  = ICM45686_Combine(&buf[8]);
-    data->gyro[1]  = ICM45686_Combine(&buf[10]);
-    data->gyro[2]  = ICM45686_Combine(&buf[12]);
-    data->temp     = ICM45686_Combine(&buf[14]);
-    *timestamp     = (uint16_t)(((uint16_t)buf[19] << 8) | (uint16_t)buf[18]);
+    data->accel[0] = ICM45686_Combine(&buf[1]);
+    data->accel[1] = ICM45686_Combine(&buf[3]);
+    data->accel[2] = ICM45686_Combine(&buf[5]);
+    data->gyro[0]  = ICM45686_Combine(&buf[7]);
+    data->gyro[1]  = ICM45686_Combine(&buf[9]);
+    data->gyro[2]  = ICM45686_Combine(&buf[11]);
+    /* Temperature occupies one byte in the FIFO: sign-extend it back to the
+     * 16-bit scale the register path returns. */
+    data->temp     = (int16_t)((int16_t)(int8_t)buf[13] * 256);
+    *timestamp     = ICM45686_Combine(&buf[14]);
 
     return HAL_OK;
 }

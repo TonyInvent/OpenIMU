@@ -72,15 +72,21 @@ extern "C" {
 
 #define ICM45686_FIFO_MODE_STREAM       0x01U  /* fifo_mode = 1                   */
 #define ICM45686_FIFO_CFG2_GT_TH        0x08U  /* interrupt when frames >= wm     */
+#define ICM45686_FIFO_CFG3_ACCEL_GYRO   0x06U  /* accel_en | gyro_en              */
 #define ICM45686_FIFO_CFG3_IF_ACCEL_GYRO 0x07U /* fifo_if_en | accel_en | gyro_en */
 #define ICM45686_FIFO_CFG4_TMST         0x02U  /* append 2-byte timestamp         */
 #define ICM45686_TMST_RESOL_1US         0x00U  /* tmst_resol = 0 -> 1 us / LSB    */
 #define ICM45686_INT1_CFG0_FIFO_THS     0x02U  /* INT1 on FIFO watermark          */
 
-/* One FIFO packet: 2 bytes of FIFO header + 16 bytes sensor data
- * + 2 bytes timestamp = 20 bytes. */
-#define ICM45686_FIFO_PACKET_SIZE       20U
-#define ICM45686_FIFO_HEADER_SIZE       2U
+/* One FIFO frame in 16-byte mode:
+ *   [0]      FIFO header
+ *   [1:7]    accel X/Y/Z  (little-endian int16)
+ *   [7:13]   gyro  X/Y/Z
+ *   [13]     temperature (single byte)
+ *   [14:16]  timestamp
+ * Size comes from TDK inv_imu_set_fifo_config(): 8 bytes per enabled sensor. */
+#define ICM45686_FIFO_PACKET_SIZE       16U
+#define ICM45686_FIFO_HEADER_SIZE       1U
 
 #define ICM45686_REG_WHO_AM_I          0x72U
 #define ICM45686_REG_REG_MISC2         0x7FU
