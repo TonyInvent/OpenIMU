@@ -266,6 +266,34 @@ Currently 12.5 MHz (24 MHz is the ICM-45686 upper limit; margin was kept). It ca
 
 > Note: regenerating code with CubeMX overwrites the SPI/FDCAN init in the generated region of `main.c`; re-apply SPI = **8-bit / Mode 3 (CPOL High, CPHA 2Edge) / 12.5 MHz / NSS soft**, with **PA4 as a GPIO output** (software CS, idle high), and FDCAN = FD+BRS (1M/5M) plus the runtime TDC / bus-off handling in `imu_task.c`.
 
+### Optional command-line build with CMake
+
+The existing STM32CubeIDE project can also be built without launching the IDE.
+Install CMake 3.21 or newer, Ninja, and Arm GNU Toolchain (`arm-none-eabi-gcc`).
+Put the toolchain's `bin` directory on `PATH`, or set `ARM_GNU_TOOLCHAIN_ROOT` to
+its installation directory (the directory containing `bin`).
+
+```sh
+cmake -S . -B build/cmake-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/cmake-release
+
+cmake -S . -B build/cmake-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/cmake-debug
+```
+
+Each build directory contains `open_imu.elf`, `open_imu.bin`, `open_imu.hex`,
+`open_imu.map`, and `compile_commands.json`. Flash the ELF, HEX or BIN using your
+usual programmer; a raw BIN uses the Flash base address `0x08000000`.
+
+Only `Debug` (`-O0 -g3`) and `Release` (`-Os -g0`, the default) are supported.
+The build uses the checked-in firmware, startup assembly and linker script with
+the Cortex-M4F hard-float settings and definitions from `.cproject`. It does not
+generate peripheral code. Keep source selections, compiler definitions and
+flags in sync with `.cproject` when changing the project. Use a fresh build
+directory when switching toolchains. This command-line path has been checked
+on Linux with Arm GNU GCC 14.3.1; the existing CubeIDE workflow remains available.
+
+
 ---
 
 ## 7. Receiving the Data on Linux (candump)
