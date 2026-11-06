@@ -22,6 +22,7 @@
 #include "stm32g4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "imu_sync.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -183,5 +184,9 @@ void EXTI0_IRQHandler(void)
 {
   HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_0);
 }
+
+#if OPENIMU_CAN_SYNC
+void TIM3_IRQHandler(void) { IMU_SyncTimerIRQ(); }
+#endif
 
 /* USER CODE END 1 */

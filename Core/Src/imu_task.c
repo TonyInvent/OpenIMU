@@ -184,7 +184,7 @@ static void IMU_Task(void *argument)
 
     FDCAN_TxHeaderTypeDef TxHeader = {0};
     ICM45686_Data_t       imu      = {0};
-    uint8_t               tx_data[IMU_CAN_DLC_BYTES];
+    uint8_t               tx_data[OPENIMU_CAN_SYNC ? 24U : IMU_CAN_DLC_BYTES];
 
     /* 0. Power-on indicator: turn the status LED solid ON. */
     LED_ON();
@@ -217,6 +217,9 @@ static void IMU_Task(void *argument)
         LED_FatalBlink();
     }
 
+#if OPENIMU_CAN_SYNC
+    (void)IMU_SyncInit(&hfdcan1);
+#endif
     if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK) {
         /* FDCAN failed to start: fast-blink forever. */
         LED_FatalBlink();
@@ -255,6 +258,11 @@ static void IMU_Task(void *argument)
         }
 
         uint16_t timestamp = 0U;
+#if OPENIMU_CAN_SYNC
+        IMU_SyncPoll();
+        uint32_t capture_token = IMU_SyncCaptureToken();
+        bool clean_pair = notified == 1U;
+#endif
 
         /* Keep the FIFO shallow: if a scheduling hiccup let more than one frame
          * queue up, drop the stale ones and transmit only the newest sample.
@@ -262,35 +270,62 @@ static void IMU_Task(void *argument)
          * because each interrupt only ever drains one frame. */
         {
             uint16_t pending = ICM45686_ReadFifoCount();
+#if OPENIMU_CAN_SYNC
+            clean_pair = clean_pair && pending == 1U;
+#endif
             while (pending > 1U) {
                 if (ICM45686_ReadFifoPacket(&imu, &timestamp) != HAL_OK) {
+#if OPENIMU_CAN_SYNC
+                    IMU_SyncSourceInvalid(); clean_pair = false;
+#endif
                     break;
                 }
+#if OPENIMU_CAN_SYNC
+                IMU_SyncSourceSample(timestamp);
+#endif
                 imu_fifo_backlog_count++;
                 pending--;
             }
         }
 
         if (ICM45686_ReadFifoPacket(&imu, &timestamp) != HAL_OK) {
+#if OPENIMU_CAN_SYNC
+            IMU_SyncSourceInvalid();
+#endif
             imu_spi_error_count++;
             LED_ErrorBlink();
             continue;
         }
 
+#if OPENIMU_CAN_SYNC
+        IMU_SyncSourceSample(timestamp);
+#endif
         {
             uint8_t fifo_status = 0U;
             if (ICM45686_ReadFifoStatus(&fifo_status) == HAL_OK) {
                 if ((fifo_status & ICM45686_STATUS_FIFO_FULL) != 0U) {
                     imu_fifo_overflow_count++;
+#if OPENIMU_CAN_SYNC
+                    IMU_SyncSourceInvalid(); clean_pair = false;
+#endif
                 }
                 if ((fifo_status & ICM45686_STATUS_RESET_DONE) != 0U) {
                     imu_fifo_reset_count++;
+#if OPENIMU_CAN_SYNC
+                    IMU_SyncSourceInvalid(); clean_pair = false;
+#endif
                 }
             }
+#if OPENIMU_CAN_SYNC
+            else { IMU_SyncSourceInvalid(); clean_pair = false; }
+#endif
         }
 
         /* [0:1] of the CAN frame carries the sensor's hardware timestamp. */
         IMU_PackFrame(tx_data, timestamp, &imu);
+#if OPENIMU_CAN_SYNC
+        TxHeader.DataLength = IMU_SyncExtend(tx_data) ? FDCAN_DLC_BYTES_24 : FDCAN_DLC_BYTES_16;
+#endif
 
         /* Snapshot protocol status + error counters before queuing the next
          * frame, so post-enqueue bus/bit errors stay visible in the debugger. */
@@ -308,5 +343,9 @@ static void IMU_Task(void *argument)
                 LED_TOGGLE();
             }
         }
+#if OPENIMU_CAN_SYNC
+        /* TX FIFO preserves insertion order: enqueue the sample before anchors. */
+        IMU_SyncReport(capture_token, clean_pair);
+#endif
     }
 }
