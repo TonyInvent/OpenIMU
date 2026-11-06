@@ -45,7 +45,7 @@ The system uses an **"interrupt-driven + read-register"** model rather than poll
                     ┌──────────────────────────────────────────────┐
                     │                 ICM-45686                    │
                     │   accel(3) + gyro(3) @ 800 Hz ODR, LN mode   │
-                    │   sample ready -> INT1 asserts a high pulse  │
+                    │          1 FIFO frame -> INT1 pulse          │
                     └───────────────┬──────────────────────────────┘
                                     │ INT1 (800 Hz, 1.25 ms period)
                                     v
@@ -160,11 +160,12 @@ End-to-end latency = **sensor internal latency** + **MCU processing path** + **C
 
 In low-noise mode, the ICM-45686 has an internal ADC-conversion and UI low-pass (anti-aliasing) filter chain. This **group delay** is typically the largest component of the whole path, on the order of **1-3 ms** (depending on the internal UI low-pass filter bandwidth setting; see section 5.2). It is determined by the MEMS sensor itself, independent of the MCU, and is the inherent cost of "physical quantity -> digital sample ready".
 
-#### (2) MCU processing path (INT1 edge -> data queued in CAN TX FIFO)
+#### (2) MCU processing path (FIFO watermark edge -> data queued in CAN TX FIFO)
 
 | Stage | Typical time | Notes |
 |---|---|---|
 | INT1 edge -> NVIC enters ISR | ~0.2-0.5 us | Cortex-M4 interrupt response ~12 cycles + EXTI sync (100 MHz) |
+| INT1 -> SPI read of one FIFO frame | ~11 us | 16 bytes at 12.5 MHz, exactly one frame per interrupt |
 | Notify task from ISR | ~0.5-1 us | HAL callback + `vTaskNotifyGiveFromISR` |
 | PendSV context switch to imuTask | ~1-2 us | FreeRTOS Cortex-M4F context switch (incl. lazy FPU stacking) |
 | 14-byte SPI burst read | ~10-12 us | 15 bytes x 8 bit @ 12.5 MHz ~= 9.6 us + HAL overhead |
@@ -207,7 +208,7 @@ total latency ~= sensor group delay (1-3 ms) + MCU path (~15-20 us) + full CAN F
 | Variable | Meaning |
 |---|---|
 | `imu_sample_count` | Frames successfully queued to the TX FIFO |
-| `imu_missed_count` | Data-ready overruns (task failed to respond in time) |
+| `imu_missed_count` | Coalesced task notifications (task was late; frames may have been skipped) |
 | `imu_can_error_count` | CAN TX FIFO full / enqueue failures |
 | `imu_spi_error_count` | SPI read failures |
 | `can_status` (`FDCAN_ProtocolStatusTypeDef`) | Protocol status: `BusOff`, `ErrorPassive`, `LastErrorCode`, `DataLastErrorCode` |
