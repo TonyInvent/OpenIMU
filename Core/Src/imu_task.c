@@ -65,6 +65,7 @@ static TaskHandle_t imu_task_handle = NULL;   /* used for ISR -> task notify */
 
 /* Diagnostics (inspect in the debugger) */
 volatile uint32_t imu_sample_count = 0U;      /* total samples transmitted   */
+volatile uint32_t imu_fifo_backlog_count = 0U;/* frames skipped to stay current */
 volatile uint32_t imu_missed_count  = 0U;     /* data-ready overruns         */
 volatile uint32_t imu_can_error_count = 0U;   /* CAN queue failures          */
 volatile uint32_t imu_spi_error_count = 0U;   /* SPI read failures           */
@@ -252,6 +253,21 @@ static void IMU_Task(void *argument)
         }
 
         uint16_t timestamp = 0U;
+
+        /* Keep the FIFO shallow: if a scheduling hiccup let more than one frame
+         * queue up, drop the stale ones and transmit only the newest sample.
+         * Without this a single stall would leave a permanent latency offset,
+         * because each interrupt only ever drains one frame. */
+        {
+            uint16_t pending = ICM45686_ReadFifoCount();
+            while (pending > 1U) {
+                if (ICM45686_ReadFifoPacket(&imu, &timestamp) != HAL_OK) {
+                    break;
+                }
+                imu_fifo_backlog_count++;
+                pending--;
+            }
+        }
 
         if (ICM45686_ReadFifoPacket(&imu, &timestamp) != HAL_OK) {
             imu_spi_error_count++;
