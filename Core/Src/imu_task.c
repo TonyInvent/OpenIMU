@@ -13,8 +13,8 @@
   *                   CAN FD frame.
   *
   *          CAN FD frame (16 bytes, big-endian multi-byte fields):
-  *            [0]    sequence high
-  *            [1]    sequence low
+  *            [0]    hardware timestamp high (1 us / tick, wraps at 65536 us)
+  *            [1]    hardware timestamp low
   *            [2:3]  accel X  (raw int16)
   *            [4:5]  accel Y
   *            [6:7]  accel Z
@@ -64,13 +64,13 @@ static const osThreadAttr_t imu_task_attributes = {
 static TaskHandle_t imu_task_handle = NULL;   /* used for ISR -> task notify */
 
 /* Diagnostics (inspect in the debugger) */
-volatile uint32_t imu_sample_count = 0U;      /* total samples transmitted   */
+volatile uint32_t imu_sample_count = 0U;      /* samples enqueued, not TX ACKs */
 volatile uint32_t imu_fifo_backlog_count = 0U;/* frames skipped to stay current */
 volatile uint32_t imu_fifo_overflow_count = 0U;/* FIFO_FULL status seen        */
 volatile uint32_t imu_fifo_reset_count = 0U;  /* device reset seen            */
 volatile uint32_t imu_missed_count  = 0U;     /* data-ready overruns         */
 volatile uint32_t imu_can_error_count = 0U;   /* CAN queue failures          */
-volatile uint32_t imu_spi_error_count = 0U;   /* SPI read failures           */
+volatile uint32_t imu_spi_error_count = 0U;   /* SPI/FIFO read failures      */
 
 /* Diagnostics: FDCAN protocol status + error counters, refreshed every frame.
  * These capture bus/bit errors that occur AFTER a frame is enqueued (which
@@ -197,7 +197,8 @@ static void IMU_Task(void *argument)
 
     /* 1a. FIFO streaming with the hardware timestamp (1 us / LSB):
      *     watermark = 1 frame, interrupt on count >= watermark, timestamp
-     *     appended to every packet. One packet per interrupt, never batched. */
+     *     included in every 16-byte packet. Check the count after each wake:
+     *     notifications may be stale and multiple packets may accumulate. */
     if (ICM45686_ConfigFifo() != HAL_OK) {
         LED_FatalBlink();
     }
@@ -261,13 +262,27 @@ static void IMU_Task(void *argument)
          * Without this a single stall would leave a permanent latency offset,
          * because each interrupt only ever drains one frame. */
         {
-            uint16_t pending = ICM45686_ReadFifoCount();
+            uint16_t pending = 0U;
+            if (ICM45686_ReadFifoCountChecked(&pending) != HAL_OK) {
+                imu_spi_error_count++;
+                LED_ErrorBlink();
+                continue;
+            }
+            if (pending == 0U) {
+                continue;
+            }
             while (pending > 1U) {
                 if (ICM45686_ReadFifoPacket(&imu, &timestamp) != HAL_OK) {
+                    imu_spi_error_count++;
+                    pending = 0U;
                     break;
                 }
                 imu_fifo_backlog_count++;
                 pending--;
+            }
+            if (pending == 0U) {
+                LED_ErrorBlink();
+                continue;
             }
         }
 
@@ -286,6 +301,10 @@ static void IMU_Task(void *argument)
                 if ((fifo_status & ICM45686_STATUS_RESET_DONE) != 0U) {
                     imu_fifo_reset_count++;
                 }
+            } else {
+                imu_spi_error_count++;
+                LED_ErrorBlink();
+                continue;
             }
         }
 

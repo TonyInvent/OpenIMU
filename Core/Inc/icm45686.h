@@ -75,6 +75,7 @@ extern "C" {
 #define ICM45686_MREG_SMC_CONTROL_0     0xA258U /* bit0 tmst_en */
 
 #define ICM45686_FIFO_MODE_STREAM       0x01U  /* fifo_mode = 1                   */
+#define ICM45686_FIFO_DEPTH_MAX         0x1EU  /* TDK AN-000364 maximum depth      */
 #define ICM45686_FIFO_CFG2_GT_TH        0x08U  /* interrupt when frames >= wm     */
 #define ICM45686_FIFO_CFG3_ACCEL_GYRO   0x06U  /* accel_en | gyro_en              */
 #define ICM45686_FIFO_CFG3_IF_ACCEL_GYRO 0x07U /* fifo_if_en | accel_en | gyro_en */
@@ -192,16 +193,17 @@ HAL_StatusTypeDef ICM45686_ReadData(ICM45686_Data_t *data);
 
 /* FIFO streaming with the hardware timestamp (1 us / LSB).
  *
- * Call ICM45686_ConfigFifo() once after ICM45686_Init(). From then on every
- * FIFO-watermark interrupt means "exactly one packet is ready"; serve it with
- * one ICM45686_ReadFifoPacket() call, which drains ONE 18-byte packet and
- * returns the 14-byte sensor data plus the 16-bit timestamp. The FIFO is
- * never allowed to accumulate: one packet in, one packet out, every 1.25 ms.
+ * Call ICM45686_ConfigFifo() once after ICM45686_Init(). Check
+ * ICM45686_ReadFifoCountChecked() after each FIFO-watermark wake before
+ * reading: notifications can be stale and scheduling can accumulate packets.
+ * Each ICM45686_ReadFifoPacket() call drains one 16-byte packet, including
+ * header, temperature and timestamp.
  *
  * The timestamp is 16-bit and wraps every 65536 us, so the host must unwrap it. */
 HAL_StatusTypeDef ICM45686_ConfigFifo(void);
 HAL_StatusTypeDef ICM45686_ReadFifoPacket(ICM45686_Data_t *data, uint16_t *timestamp);
 uint16_t ICM45686_ReadFifoCount(void);
+HAL_StatusTypeDef ICM45686_ReadFifoCountChecked(uint16_t *count);
 HAL_StatusTypeDef ICM45686_ReadFifoStatus(uint8_t *status);
 uint32_t ICM45686_GetFrameErrors(void);
 HAL_StatusTypeDef ICM45686_ReadRegister(uint8_t reg, uint8_t *value);

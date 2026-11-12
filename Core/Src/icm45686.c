@@ -18,12 +18,7 @@
   */
 #include "icm45686.h"
 
-/* Data endianness mirrored from SREG_CTRL (affects register and FIFO decoding),
- * the FIFO header tag observed on the first frame, and the count of frames
- * rejected because that tag changed. */
-static uint8_t  icm45686_big_endian  = 0U;
-static uint8_t  icm45686_fifo_header = 0U;
-static uint8_t  icm45686_header_seen = 0U;
+/* Count packets rejected by the configured FIFO format / sample checks. */
 static uint32_t icm45686_frame_errors = 0U;
 
 /* Software chip-select (CS) on PA4 - toggled manually around each transaction.
@@ -234,10 +229,9 @@ HAL_StatusTypeDef ICM45686_Init(SPI_HandleTypeDef *hspi)
 
     /* 2b. Read the sensor data endianness (defaults to little-endian). */
     if (ICM45686_ReadMreg(ICM45686_MREG_SREG_CTRL, &value, 1U) != HAL_OK) {
-        icm_endian_big = 0U; /* fall back to the power-up default */
-    } else {
-        icm_endian_big = ((value & ICM45686_SREG_DATA_BIG_ENDIAN) != 0U) ? 1U : 0U;
+        return HAL_ERROR;
     }
+    icm_endian_big = ((value & ICM45686_SREG_DATA_BIG_ENDIAN) != 0U) ? 1U : 0U;
 
     /* 3. Clear interrupt routing first; the UI data-ready source is enabled
      *    AFTER power-on (see step 10), matching the working BeijingDynamics /
@@ -358,12 +352,9 @@ static HAL_StatusTypeDef ICM45686_EnableTimestamp(void)
 /**
   * @brief  Configure the FIFO for one-packet-per-interrupt streaming.
   *
-  *         A packet is 18 bytes: the 16 bytes of sensor data followed by the
-  *         2-byte timestamp (fifo_tmst_fsync_en). The watermark is set to ONE
-  *         FRAME - the FIFO counts frames, not bytes - and the interrupt fires
-  *         when count >= watermark, so every INT1 means "exactly one packet is
-  *         ready". The FIFO therefore never accumulates: one packet in, one
-  *         packet out, every 1.25 ms.
+  *         A packet is 16 bytes, including its header and timestamp.
+  *         Watermark = one frame. Always check the count: interrupts can be
+  *         stale, and more than one frame can accumulate before servicing.
   */
 HAL_StatusTypeDef ICM45686_ConfigFifo(void)
 {
@@ -382,9 +373,10 @@ HAL_StatusTypeDef ICM45686_ConfigFifo(void)
     /* Mirror SREG_CTRL so register and FIFO decoding follow the device. */
     {
         uint8_t sreg = 0U;
-        if (ICM45686_ReadMreg(ICM45686_MREG_SREG_CTRL, &sreg, 1U) == HAL_OK) {
-            icm45686_big_endian = ((sreg & ICM45686_SREG_DATA_BIG_ENDIAN) != 0U) ? 1U : 0U;
+        if (ICM45686_ReadMreg(ICM45686_MREG_SREG_CTRL, &sreg, 1U) != HAL_OK) {
+            return HAL_ERROR;
         }
+        icm_endian_big = ((sreg & ICM45686_SREG_DATA_BIG_ENDIAN) != 0U) ? 1U : 0U;
     }
 
     /* Accel and gyro share one FIFO rate, and no FSYNC tag may interleave. */
@@ -393,7 +385,7 @@ HAL_StatusTypeDef ICM45686_ConfigFifo(void)
     }
     {
         uint8_t fsync = 0U;
-        if (ICM45686_ReadRegister(ICM45686_REG_FSYNC_CONFIG0, &fsync) == HAL_OK &&
+        if (ICM45686_ReadRegister(ICM45686_REG_FSYNC_CONFIG0, &fsync) != HAL_OK ||
             ICM45686_WriteRegisterChecked(ICM45686_REG_FSYNC_CONFIG0,
                                           (uint8_t)(fsync & 0xF8U)) != HAL_OK) {
             return HAL_ERROR;
@@ -402,33 +394,33 @@ HAL_StatusTypeDef ICM45686_ConfigFifo(void)
 
     /* 2. Close the data path and put the FIFO in bypass before touching the
      *    configuration (same order as TDK inv_imu_set_fifo_config). */
-    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG3, 0x00U) != HAL_OK) {
+    if (ICM45686_WriteRegisterChecked(ICM45686_REG_FIFO_CONFIG3, 0x00U) != HAL_OK) {
         return HAL_ERROR;
     }
-    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG0, 0x00U) != HAL_OK) {
+    if (ICM45686_WriteRegisterChecked(ICM45686_REG_FIFO_CONFIG0, ICM45686_FIFO_DEPTH_MAX) != HAL_OK) {
         return HAL_ERROR;
     }
 
     /* 3. Watermark = 1 FRAME (the FIFO counts frames, not bytes). */
-    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG1_0, 0x01U) != HAL_OK ||
-        ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG1_1, 0x00U) != HAL_OK) {
+    if (ICM45686_WriteRegisterChecked(ICM45686_REG_FIFO_CONFIG1_0, 0x01U) != HAL_OK ||
+        ICM45686_WriteRegisterChecked(ICM45686_REG_FIFO_CONFIG1_1, 0x00U) != HAL_OK) {
         return HAL_ERROR;
     }
 
     /* 4. Interrupt when frame count >= watermark. */
-    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG2,
+    if (ICM45686_WriteRegisterChecked(ICM45686_REG_FIFO_CONFIG2,
                                ICM45686_FIFO_CFG2_GT_TH) != HAL_OK) {
         return HAL_ERROR;
     }
 
     /* 5. accel + gyro streams (16-bit mode). */
-    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG3,
+    if (ICM45686_WriteRegisterChecked(ICM45686_REG_FIFO_CONFIG3,
                                ICM45686_FIFO_CFG3_ACCEL_GYRO) != HAL_OK) {
         return HAL_ERROR;
     }
 
     /* 6. Append the 2-byte timestamp to every frame. */
-    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG4,
+    if (ICM45686_WriteRegisterChecked(ICM45686_REG_FIFO_CONFIG4,
                                ICM45686_FIFO_CFG4_TMST) != HAL_OK) {
         return HAL_ERROR;
     }
@@ -448,19 +440,22 @@ HAL_StatusTypeDef ICM45686_ConfigFifo(void)
         }
         HAL_Delay(1U);
     }
+    if (retry == 20U) {
+        return HAL_TIMEOUT;
+    }
 
     /* 8. Start streaming, then close the data-path switch (fifo_if_en). */
-    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG0,
-                               (uint8_t)(ICM45686_FIFO_MODE_STREAM << 6)) != HAL_OK) {
+    if (ICM45686_WriteRegisterChecked(ICM45686_REG_FIFO_CONFIG0,
+                               (uint8_t)((ICM45686_FIFO_MODE_STREAM << 6) | ICM45686_FIFO_DEPTH_MAX)) != HAL_OK) {
         return HAL_ERROR;
     }
-    if (ICM45686_WriteRegister(ICM45686_REG_FIFO_CONFIG3,
+    if (ICM45686_WriteRegisterChecked(ICM45686_REG_FIFO_CONFIG3,
                                ICM45686_FIFO_CFG3_IF_ACCEL_GYRO) != HAL_OK) {
         return HAL_ERROR;
     }
 
     /* 9. INT1 reports the FIFO watermark instead of DRDY. */
-    return ICM45686_WriteRegister(ICM45686_REG_INT1_CONFIG0,
+    return ICM45686_WriteRegisterChecked(ICM45686_REG_INT1_CONFIG0,
                                   ICM45686_INT1_CFG0_FIFO_THS);
 }
 
@@ -469,15 +464,27 @@ HAL_StatusTypeDef ICM45686_ConfigFifo(void)
   */
 uint16_t ICM45686_ReadFifoCount(void)
 {
+    uint16_t count = 0U;
+    (void)ICM45686_ReadFifoCountChecked(&count);
+    return count;
+}
+
+HAL_StatusTypeDef ICM45686_ReadFifoCountChecked(uint16_t *frames)
+{
     uint8_t count[2] = {0U, 0U};
+    if (frames == NULL) {
+        return HAL_ERROR;
+    }
+    *frames = 0U;
 
     /* AN-000364 2.2: read twice and use the second value. */
     if (ICM45686_ReadRegisters(ICM45686_REG_FIFO_COUNT_0, count, 2) != HAL_OK ||
         ICM45686_ReadRegisters(ICM45686_REG_FIFO_COUNT_0, count, 2) != HAL_OK) {
-        return 0U;
+        return HAL_ERROR;
     }
-    return icm45686_big_endian ? (uint16_t)(((uint16_t)count[0] << 8) | count[1])
-                               : (uint16_t)(((uint16_t)count[1] << 8) | count[0]);
+    *frames = icm_endian_big ? (uint16_t)(((uint16_t)count[0] << 8) | count[1])
+                           : (uint16_t)(((uint16_t)count[1] << 8) | count[0]);
+    return HAL_OK;
 }
 
 /**
@@ -502,14 +509,20 @@ HAL_StatusTypeDef ICM45686_ReadFifoPacket(ICM45686_Data_t *data, uint16_t *times
         return HAL_ERROR;
     }
 
-    /* The FIFO header tag must stay constant: a change means the format or
-     * ODR changed under us, which would shift every following field. */
-    if (icm45686_header_seen == 0U) {
-        icm45686_fifo_header = buf[0];
-        icm45686_header_seen = 1U;
-    } else if (buf[0] != icm45686_fifo_header) {
+    /* Expect accel + gyro + timestamp, no high-resolution/extended/FSYNC
+     * format. Bits 0/1 are ODR-change indicators and may legitimately vary.
+     * Never learn a permanent format from an unvalidated startup packet. */
+    if ((buf[0] & 0xFCU) != 0x68U) {
         icm45686_frame_errors++;
         return HAL_ERROR;
+    }
+
+    /* Reject startup / missing-sensor sentinel samples before publishing. */
+    for (uint16_t i = 1U; i < 13U; i += 2U) {
+        if ((uint16_t)ICM45686_Combine(&buf[i]) == 0x8000U) {
+            icm45686_frame_errors++;
+            return HAL_ERROR;
+        }
     }
 
     data->accel[0] = ICM45686_Combine(&buf[1]);

@@ -1,0 +1,1 @@
+/* FreeRTOS entry points are supplied by the native integration test. */
