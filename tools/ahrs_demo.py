@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 import threading
 import time
@@ -486,6 +487,12 @@ class LivePlot:
         self.max_points = 900          # ~1 point per pixel of the plot width
         plt.ion()
         self.fig = plt.figure("open_imu AHRS demo", figsize=(12, 9))
+        # Closing the window must stop the render loop deterministically.
+        # fignum_exists() only updates once the GUI processes the click, which
+        # happens inside plt.pause(); relying on it alone left the loop running
+        # with the window already gone.
+        self.closed = False
+        self.fig.canvas.mpl_connect("close_event", self._on_close)
         gs = self.fig.add_gridspec(3, 2, height_ratios=[1.25, 1.0, 1.0])
         self.ax3d = self.fig.add_subplot(gs[0, 0], projection="3d")
         self.ax_acc = self.fig.add_subplot(gs[0, 1])
@@ -629,7 +636,7 @@ class LivePlot:
             fontsize=9,
         )
         self.fig.canvas.draw_idle()
-        self.plt.pause(0.001)
+        self._pump_once()
 
     @staticmethod
     def _robust_ylim(ax, series, pad=0.15):
@@ -641,25 +648,49 @@ class LivePlot:
         span = max(hi - lo, 1e-6)
         ax.set_ylim(lo - pad * span, hi + pad * span)
 
+    def _on_close(self, _event):
+        # Do not wait for the render loop: exiting here cannot deadlock, even
+        # if the backend is still inside its own event dispatch.
+        self.closed = True
+        print("window closed")
+        sys.stdout.flush()
+        os._exit(0)
+
     def alive(self) -> bool:
+        if self.closed:
+            return False
         try:
-            return self.plt.fignum_exists(self.fig.number)
+            return bool(self.plt.get_fignums()) and self.plt.fignum_exists(self.fig.number)
         except Exception:
             return False
+
+    def _pump_once(self):
+        """Draw and process GUI events without entering a nested event loop.
+
+        plt.pause() runs a nested loop with a quit timer. On the Qt backend,
+        destroying the window from inside that loop can leave it waiting for a
+        timer whose receiver is already gone, which freezes the process and
+        produces the Windows "not responding" dialog.
+        """
+        try:
+            self.fig.canvas.flush_events()
+            if not self.plt.get_fignums():
+                self.closed = True
+        except Exception:
+            self.closed = True
 
     def pump(self):
         """Process GUI events without touching the data (keeps the window alive)."""
         try:
             self.fig.canvas.draw_idle()
-            self.plt.pause(0.005)
+            self._pump_once()
         except Exception:
             pass
 
     def close(self):
-        try:
-            self.plt.close(self.fig)
-        except Exception:
-            pass
+        # Only mark it closed. Calling pyplot here can block on Tk's own
+        # mainloop; the process exit below tears everything down instead.
+        self.closed = True
 
 
 # ---------------------------------------------------------------------------
@@ -723,6 +754,9 @@ def main():
     t_wait = time.perf_counter()
     last_pump = 0.0
     while not reader.ready.wait(0.02):
+        if plot is not None and not plot.alive():
+            reader.stop()
+            sys.exit(0)
         if plot is not None and time.perf_counter() - last_pump > 0.2:
             plot.pump()
             last_pump = time.perf_counter()
@@ -805,6 +839,10 @@ def main():
             except Exception:
                 pass
         print("bye")
+    # The Tk backend can leave its own event loop running after the window is
+    # gone; flush the console and leave without waiting for it.
+    sys.stdout.flush()
+    os._exit(0)
 
 
 if __name__ == "__main__":
