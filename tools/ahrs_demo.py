@@ -20,6 +20,7 @@ CAN backends (python-can):
             configured for CAN FD, see README section 7:
               sudo ip link set can0 type can bitrate 1000000 dbitrate 5000000 fd on
   Windows : PCAN-Basic (-i pcan -c PCAN_USBBUS1) for a PCAN-USB FD adapter.
+  Any OS  : CSS Electronics CANsub (-i cansub -c aabbccdd-usb.local@1), pip install python-can-cansub.
 
 Requires: python-can, numpy, matplotlib.
 """
@@ -470,6 +471,13 @@ def open_bus(args):
             data_brp=1, data_tseg1=11, data_tseg2=4, data_sjw=4,  # 5 Mbit/s, SP 75%
         )
 
+    if interface == "cansub":
+        # CSS Electronics CANsub (USB or Ethernet) via the python-can-cansub plugin
+        if not channel:
+            raise ValueError("cansub needs a channel, e.g. -c aabbccdd-usb.local@1")
+        return can.Bus(interface="cansub", channel=channel, fd=True,
+                       bitrate=1_000_000, data_bitrate=5_000_000)
+
     # SocketCAN: bitrates are configured outside python-can (`ip link ... fd on`).
     return can.Bus(interface="socketcan", channel=channel, fd=True)
 
@@ -702,7 +710,7 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("-i", "--interface", default="auto",
-                   choices=("auto", "socketcan", "pcan"),
+                   choices=("auto", "socketcan", "pcan", "cansub"),
                    help="python-can backend (auto: socketcan on Linux, pcan on Windows)")
     p.add_argument("-c", "--channel", default=None,
                    help="CAN channel/interface (auto: can0 / PCAN_USBBUS1)")

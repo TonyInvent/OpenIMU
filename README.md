@@ -391,6 +391,9 @@ python tools/ahrs_demo.py -i socketcan -c can0
 # Windows: PCAN-USB FD via PCAN-Basic
 python tools/ahrs_demo.py -i pcan -c PCAN_USBBUS1
 
+# Any OS: CSS Electronics CANsub (pip install python-can-cansub)
+python tools/ahrs_demo.py -i cansub -c aabbccdd-usb.local@1
+
 # backend auto-detected (socketcan on Linux, pcan on Windows)
 python tools/ahrs_demo.py
 
